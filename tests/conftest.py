@@ -17,7 +17,7 @@ def settings(tmp_path) -> Settings:
         google_client_id="test-client",
         dev_mode=True,
         enable_scheduler=False,
-        frontend_origin="http://localhost:5173",
+        frontend_origin="http://localhost:5176",
         max_assignment_attempts=2,
         confirmation_timeout_minutes=60,
         notification_retry_seconds=60,

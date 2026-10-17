@@ -154,6 +154,7 @@ def _commit_proposal(
     *,
     attempt_number: int,
     actor: str,
+    send_email: bool = True,
 ) -> Assignment:
     assignment = Assignment(
         host_id=task.host_id,
@@ -198,7 +199,7 @@ def _commit_proposal(
         reason=describe(chosen),
         details={"cleaner_id": chosen.cleaner_id, "actor": actor, "attempt": attempt_number, "task_id": task.id},
     )
-    if policy.notify_cleaners:
+    if policy.notify_cleaners and send_email:
         from turnoverops.services.cleaner_mail import send_assignment_email
 
         send_assignment_email(db, assignment, settings, now)
@@ -237,6 +238,7 @@ def _propose(
     cleaner_id: str | None,
     extra_excluded: set[str],
     actor: str,
+    send_email: bool = True,
 ) -> Assignment | None:
     failures = _window_failures(db, task)
     if cleaner_id is None and not ignore_cap and len(failures) >= settings.max_assignment_attempts:
@@ -288,6 +290,7 @@ def _propose(
         policy,
         attempt_number=len(failures) + 1,
         actor=actor,
+        send_email=send_email,
     )
 
 
@@ -334,6 +337,7 @@ def reconcile_task(
     cleaner_id: str | None = None,
     actor: str = "system",
     policy: HostPolicy,
+    send_email: bool = True,
 ) -> None:
     if task.status in {TaskStatus.completed, TaskStatus.blocked}:
         return
@@ -396,6 +400,7 @@ def reconcile_task(
             cleaner_id=None,
             extra_excluded=set(),
             actor=actor,
+            send_email=send_email,
         )
         return
     bump(db, task)
@@ -411,6 +416,7 @@ def reconcile_task(
         cleaner_id=cleaner_id,
         extra_excluded=set(),
         actor=actor,
+        send_email=send_email,
     )
 
 
@@ -422,13 +428,36 @@ def reconcile_open(db: Session, prop: Property, now: datetime, settings: Setting
             CleaningTask.status.notin_((TaskStatus.completed, TaskStatus.blocked)),
         )
     ).all()
+    previous_assignments = {task.id: task.current_assignment_id for task in tasks}
     for task in tasks:
         try:
-            reconcile_task(db, task, prop, now, settings, policy=policy)
+            reconcile_task(db, task, prop, now, settings, policy=policy, send_email=False)
         except AppError as exc:
             if exc.code != "conflict":
                 raise
+    assignment_ids = [
+        task.current_assignment_id
+        for task in tasks
+        if task.current_assignment_id and task.current_assignment_id != previous_assignments[task.id]
+    ]
+    _send_assignment_batch(db, prop.host_id, assignment_ids, settings, now, notify=policy.notify_cleaners)
     return list(tasks)
+
+
+def _send_assignment_batch(
+    db: Session,
+    host_id: str,
+    assignment_ids: list[str],
+    settings: Settings,
+    now: datetime,
+    *,
+    notify: bool,
+) -> None:
+    if not notify or not assignment_ids:
+        return
+    from turnoverops.services.cleaner_mail import send_weekly_schedules
+
+    send_weekly_schedules(db, settings, now, host_id=host_id, assignment_ids=assignment_ids)
 
 
 def accept_assignment(db: Session, assignment: Assignment, now: datetime, settings: Settings, *, actor: str) -> CleaningTask:

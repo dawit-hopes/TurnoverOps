@@ -10,14 +10,14 @@ class Settings(BaseSettings):
     jwt_secret: str = "dev-only-change-me-to-a-long-random-string"
     jwt_ttl_minutes: int = 720
     google_client_id: str = ""
-    frontend_origin: str = "http://localhost:5173"
+    frontend_origin: str = "http://localhost:5176"
     public_frontend_url: str = ""
     dev_mode: bool = False
     gemini_api_key: str = ""
     gemini_model: str = "gemini-2.0-flash"
     google_calendar_client_id: str = ""
     google_calendar_client_secret: str = ""
-    google_calendar_redirect_uri: str = "http://localhost:5173/integrations/google-calendar"
+    google_calendar_redirect_uri: str = "http://localhost:5176/integrations/google-calendar"
     cleaner_google_calendar_redirect_uri: str = "http://localhost:8000/public/cleaner-calendar/callback"
     max_assignment_attempts: int = 3
     confirmation_timeout_minutes: int = 60
@@ -61,4 +61,4 @@ def frontend_base_url(settings: Settings) -> str:
     for origin in origins:
         if urlsplit(origin).hostname not in {"localhost", "127.0.0.1", "::1"}:
             return origin
-    return origins[0] if origins else "http://localhost:5173"
+    return origins[0] if origins else "http://localhost:5176"

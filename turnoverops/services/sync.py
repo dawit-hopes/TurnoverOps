@@ -280,12 +280,21 @@ def sync_snapshots(db: Session, prop: Property, snapshots: list[ReservationSnaps
     counts = apply_snapshots(db, prop, snapshots, now)
     affected = rebuild_tasks(db, prop, now)
     policy = load_policy(db, prop.host_id)
+    previous_assignments = {task.id: task.current_assignment_id for task in affected}
     for task in affected:
         try:
-            reconcile_task(db, task, prop, now, settings, policy=policy)
+            reconcile_task(db, task, prop, now, settings, policy=policy, send_email=False)
         except AppError as exc:
             if exc.code != "conflict":
                 raise
+    assignment_ids = [
+        task.current_assignment_id
+        for task in affected
+        if task.current_assignment_id and task.current_assignment_id != previous_assignments[task.id]
+    ]
+    from turnoverops.services.workflow import _send_assignment_batch
+
+    _send_assignment_batch(db, prop.host_id, assignment_ids, settings, now, notify=policy.notify_cleaners)
     prop.sync_status = SyncStatus.ok
     prop.last_synced_at = now
     prop.last_sync_error = None
