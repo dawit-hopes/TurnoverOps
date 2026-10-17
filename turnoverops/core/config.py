@@ -1,3 +1,5 @@
+from urllib.parse import urlsplit
+
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -9,6 +11,7 @@ class Settings(BaseSettings):
     jwt_ttl_minutes: int = 720
     google_client_id: str = ""
     frontend_origin: str = "http://localhost:5173"
+    public_frontend_url: str = ""
     dev_mode: bool = False
     gemini_api_key: str = ""
     gemini_model: str = "gemini-2.0-flash"
@@ -48,3 +51,14 @@ class Settings(BaseSettings):
 
 def get_settings() -> Settings:
     return Settings()
+
+
+def frontend_base_url(settings: Settings) -> str:
+    configured = settings.public_frontend_url.strip().rstrip("/")
+    if configured:
+        return configured
+    origins = [origin.strip().rstrip("/") for origin in settings.frontend_origin.split(",") if origin.strip()]
+    for origin in origins:
+        if urlsplit(origin).hostname not in {"localhost", "127.0.0.1", "::1"}:
+            return origin
+    return origins[0] if origins else "http://localhost:5173"

@@ -15,6 +15,8 @@ services:
         generateValue: true
       - key: FRONTEND_ORIGIN
         sync: false
+      - key: PUBLIC_FRONTEND_URL
+        value: https://turnover-ops-fe.vercel.app
       - key: APP_BASE_URL
         sync: false
       - key: ENABLE_SCHEDULER

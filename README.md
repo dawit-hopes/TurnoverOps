@@ -42,12 +42,13 @@ A feasible cleaner is stored as `awaiting_confirmation`. `POST /assignments/{id}
 
 ## Environment
 
-See [.env.example](.env.example). Secrets stay in the environment. `FRONTEND_ORIGIN` is the only browser origin allowed by CORS.
+See [.env.example](.env.example). Secrets stay in the environment. `FRONTEND_ORIGIN` lists browser origins allowed by CORS; set `PUBLIC_FRONTEND_URL` to the deployed frontend URL used in cleaner and host links.
 
 | Variable | Purpose |
 | --- | --- |
 | `GOOGLE_CLIENT_ID` | Audience for host sign-in |
 | `JWT_SECRET` | Signs the API session token |
+| `PUBLIC_FRONTEND_URL` | Deployed frontend base URL used in email links |
 | `GEMINI_API_KEY` | Optional intent parsing. Exact commands still work without it |
 | `GOOGLE_CALENDAR_CLIENT_ID` / `GOOGLE_CALENDAR_CLIENT_SECRET` | Optional calendar publishing after a cleaner accepts |
 | `GOOGLE_CALENDAR_REDIRECT_URI` | Existing host calendar OAuth callback in the frontend |

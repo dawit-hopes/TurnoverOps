@@ -16,7 +16,7 @@ from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from turnoverops.core.config import Settings
+from turnoverops.core.config import Settings, frontend_base_url
 from turnoverops.core.security import hash_token
 from turnoverops.domain import LIVE_ASSIGNMENT_STATES, LOCKED_TASK_STATUSES, AssignmentState, TaskStatus
 from turnoverops.integrations.smtp_email import SmtpError, SmtpNotConfigured, send_smtp_email
@@ -544,15 +544,8 @@ def _job_view(cleaner, prop, task, assignment, token: str, settings: Settings) -
         "duration_minutes": task.duration_minutes,
         "instructions": instructions,
         "calendar_url": calendar,
-        "reject_url": f"{_frontend_base_url(settings)}/reject/{token}",
+        "reject_url": f"{frontend_base_url(settings)}/reject/{token}",
     }
-
-
-def _frontend_base_url(settings: Settings) -> str:
-    return next(
-        (origin.strip().rstrip("/") for origin in settings.frontend_origin.split(",") if origin.strip()),
-        "http://localhost:5173",
-    )
 
 
 def _day_label(moment: datetime) -> str:

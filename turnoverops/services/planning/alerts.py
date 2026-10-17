@@ -8,7 +8,7 @@ from urllib.parse import quote
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from turnoverops.core.config import Settings
+from turnoverops.core.config import Settings, frontend_base_url
 from turnoverops.domain import LIVE_ASSIGNMENT_STATES
 from turnoverops.integrations.email_api import EmailError, EmailNotConfigured
 from turnoverops.integrations.smtp_email import SmtpError, SmtpNotConfigured, send_smtp_email
@@ -73,10 +73,7 @@ def alert_unassigned_batch(db, host, items, settings, *, email_client=None) -> N
         return None
     lines = ["These cleanings have no validated cleaner available:"]
     links = []
-    frontend_origin = next(
-        (origin.strip().rstrip("/") for origin in settings.frontend_origin.split(",") if origin.strip()),
-        "http://localhost:5173",
-    )
+    frontend_origin = frontend_base_url(settings)
     for task, prop, reason, _ in items:
         deadline = spoken_time(task.window_end, prop.timezone)
         url = f"{frontend_origin}/overview?task={quote(task.id)}"
