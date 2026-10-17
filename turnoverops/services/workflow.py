@@ -337,7 +337,7 @@ def reconcile_task(
 ) -> None:
     if task.status in {TaskStatus.completed, TaskStatus.blocked}:
         return
-    decision = evaluate_window(db, task.host_id, task_window(task, prop.timezone), exclude_task_id=task.id)
+    decision = evaluate_window(db, task.host_id, task_window(task, prop.timezone), exclude_task_id=task.id, settings=settings)
     task.last_evaluated_at = now
     current = current_assignment(db, task)
     if task.started_at is not None:
@@ -505,7 +505,7 @@ def close_assignment(
     if not host_policy.auto_reassignment:
         _park_for_host(db, task, prop, host_policy, now, reason)
         return task
-    decision = evaluate_window(db, task.host_id, task_window(task, prop.timezone), exclude_task_id=task.id)
+    decision = evaluate_window(db, task.host_id, task_window(task, prop.timezone), exclude_task_id=task.id, settings=settings)
     _propose(
         db,
         task,
@@ -535,7 +535,7 @@ def reassign_task(
     host_policy = policy or load_policy(db, task.host_id)
     if task.started_at is not None or task.status in LOCKED_TASK_STATUSES:
         raise AppError(409, "task_locked", "This cleaning can no longer be reassigned automatically.")
-    decision = evaluate_window(db, task.host_id, task_window(task, prop.timezone), exclude_task_id=task.id)
+    decision = evaluate_window(db, task.host_id, task_window(task, prop.timezone), exclude_task_id=task.id, settings=settings)
     current = current_assignment(db, task)
     extra_excluded: set[str] = set()
     if cleaner_id is None and current is not None:

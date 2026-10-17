@@ -1,6 +1,6 @@
 from datetime import datetime, time
 
-from sqlalchemy import JSON, Boolean, Float, ForeignKey, Index, Integer, String, Time, UniqueConstraint, text
+from sqlalchemy import JSON, Boolean, Float, ForeignKey, Index, Integer, String, Text, Time, UniqueConstraint, text
 from sqlalchemy.orm import Mapped, mapped_column
 
 from turnoverops.domain import AssignmentState, FeedKind, SyncStatus, TaskStatus
@@ -83,6 +83,12 @@ class Cleaner(Timestamped, Base):
     active: Mapped[bool] = mapped_column(Boolean, default=True)
     telegram_status: Mapped[str] = mapped_column(String(32), default="disconnected")
     unavailable_dates: Mapped[list] = mapped_column(JSON, default=list)
+    calendar_status: Mapped[str] = mapped_column(String(24), default="not_connected")
+    calendar_connect_token_hash: Mapped[str | None] = mapped_column(String(64))
+    calendar_connect_token_expires_at: Mapped[datetime | None] = mapped_column(UtcDateTime)
+    calendar_oauth_state_hash: Mapped[str | None] = mapped_column(String(64))
+    calendar_oauth_state_expires_at: Mapped[datetime | None] = mapped_column(UtcDateTime)
+    calendar_tokens_encrypted: Mapped[str | None] = mapped_column(Text)
 
 
 class CleanerProperty(Base):

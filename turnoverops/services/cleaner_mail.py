@@ -22,6 +22,7 @@ from turnoverops.domain import LIVE_ASSIGNMENT_STATES, LOCKED_TASK_STATUSES, Ass
 from turnoverops.integrations.smtp_email import SmtpError, SmtpNotConfigured, send_smtp_email
 from turnoverops.models import Assignment, Cleaner, CleaningTask, Host, Notification, Property, RejectionToken
 from turnoverops.services.audit import audit
+from turnoverops.services.cleaner_calendar import issue_connect_link
 from turnoverops.services.host_policy import load_policy
 from turnoverops.services.notifications import notify_host
 
@@ -295,15 +296,35 @@ def rejection_preview(db: Session, raw_token: str, settings: Settings, now: date
     return 200, _confirm_page(prop, task, assignment, raw_token, settings)
 
 
-def rejection_confirm(db: Session, raw_token: str, settings: Settings, now: datetime) -> tuple[int, str]:
+def rejection_details(db: Session, raw_token: str, settings: Settings, now: datetime) -> dict:
     found = _resolve_token(db, raw_token, settings, now)
     if found is None:
-        return 404, _page("This link is not valid.", "Nothing was changed.")
+        return {"can_decline": False, "title": "This link is not valid", "detail": "Check the email for the latest link. Nothing was changed."}
     token, assignment, task, prop, blocker = found
     if token.used_at is not None:
-        return 200, _page("This decline was already recorded.", "The job was not changed again.")
+        return {"can_decline": False, "title": "This decline was already recorded", "detail": "Nothing was changed."}
     if blocker or assignment is None or task is None or prop is None:
-        return 200, _page(blocker or "This link is not valid.", "Nothing was changed.")
+        return {"can_decline": False, "title": blocker or "This link is not valid", "detail": "Nothing was changed."}
+    return {
+        "can_decline": True,
+        "title": "Review this cleaning",
+        "detail": "This job will only be declined if you press the button below.",
+        "property_name": prop.name,
+        "scheduled_start": assignment.scheduled_start.isoformat(),
+        "scheduled_end": assignment.scheduled_end.isoformat(),
+        "timezone": mail_zone(settings).key,
+    }
+
+
+def rejection_confirm(db: Session, raw_token: str, settings: Settings, now: datetime, *, as_json: bool = False) -> tuple[int, str | dict]:
+    found = _resolve_token(db, raw_token, settings, now)
+    if found is None:
+        return 404, _rejection_response("This link is not valid", "Nothing was changed.", as_json)
+    token, assignment, task, prop, blocker = found
+    if token.used_at is not None:
+        return 200, _rejection_response("This decline was already recorded", "The job was not changed again.", as_json)
+    if blocker or assignment is None or task is None or prop is None:
+        return 200, _rejection_response(blocker or "This link is not valid", "Nothing was changed.", as_json)
     from turnoverops.services.workflow import close_assignment
 
     token.used_at = now
@@ -323,7 +344,11 @@ def rejection_confirm(db: Session, raw_token: str, settings: Settings, now: date
         detail = f"{replacement} is now assigned. You do not need to do anything else."
     else:
         detail = "No replacement was assigned. The manager has been told."
-    return 200, _page(f"You declined the cleaning at {prop.name}.", detail)
+    return 200, _rejection_response(f"You declined the cleaning at {prop.name}", detail, as_json)
+
+
+def _rejection_response(title: str, detail: str, as_json: bool) -> str | dict:
+    return {"title": title, "detail": detail, "can_decline": False} if as_json else _page(title, detail)
 
 
 def email_manager_rejection(db: Session, assignment: Assignment, settings: Settings, now: datetime, *, reason: str) -> Notification | None:
@@ -519,8 +544,15 @@ def _job_view(cleaner, prop, task, assignment, token: str, settings: Settings) -
         "duration_minutes": task.duration_minutes,
         "instructions": instructions,
         "calendar_url": calendar,
-        "reject_url": f"{_base_url(settings)}/reject/{token}",
+        "reject_url": f"{_frontend_base_url(settings)}/reject/{token}",
     }
+
+
+def _frontend_base_url(settings: Settings) -> str:
+    return next(
+        (origin.strip().rstrip("/") for origin in settings.frontend_origin.split(",") if origin.strip()),
+        "http://localhost:5173",
+    )
 
 
 def _day_label(moment: datetime) -> str:
@@ -605,6 +637,54 @@ def _replacement_name(db: Session, task: CleaningTask, declined_assignment_id: s
 
 def _notification(db: Session, host_id: str, dedupe_key: str) -> Notification | None:
     return db.scalar(select(Notification).where(Notification.host_id == host_id, Notification.dedupe_key == dedupe_key))
+
+
+def send_cleaner_welcome_email(
+    db: Session,
+    cleaner: Cleaner,
+    settings: Settings,
+    now: datetime | None = None,
+) -> Notification | None:
+    if not cleaner.email:
+        return None
+    dedupe_key = f"cleaner-welcome:{cleaner.id}"
+    existing = _notification(db, cleaner.host_id, dedupe_key)
+    if existing is not None:
+        return existing
+    moment = now or datetime.now(UTC)
+    connect_url = issue_connect_link(db, cleaner, settings, moment)
+    if connect_url:
+        connect_text = f"Connect Google Calendar to let TurnoverOps check your busy times:\n{connect_url}"
+        connect_html = (
+            '<p>Connect Google Calendar to let TurnoverOps check your busy times.</p>'
+            f'<p><a href="{html.escape(connect_url, quote=True)}">Connect Google Calendar</a></p>'
+        )
+    else:
+        connect_text = "Google Calendar connection is not configured yet. Your configured working hours will be used until it is available."
+        connect_html = f"<p>{html.escape(connect_text)}</p>"
+    body = f"Welcome to TurnoverOps, {cleaner.name}.\n\n{connect_text}"
+    note = _new_notification(
+        db,
+        host_id=cleaner.host_id,
+        recipient_id=cleaner.id,
+        task_id=None,
+        message_type="cleaner_welcome",
+        dedupe_key=dedupe_key,
+        body=body,
+    )
+    name = html.escape(cleaner.name)
+    _deliver(
+        db,
+        note,
+        settings,
+        moment,
+        to=cleaner.email,
+        subject="Welcome to TurnoverOps",
+        text=body,
+        html=f"<p>Hello {name}, welcome to TurnoverOps.</p>{connect_html}",
+        via="gmail_smtp",
+    )
+    return note
 
 
 def _new_notification(

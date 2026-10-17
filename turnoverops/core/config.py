@@ -18,6 +18,7 @@ class Settings(BaseSettings):
     google_calendar_client_id: str = ""
     google_calendar_client_secret: str = ""
     google_calendar_redirect_uri: str = "http://localhost:5173/integrations/google-calendar"
+    cleaner_google_calendar_redirect_uri: str = "http://localhost:8000/public/cleaner-calendar/callback"
     max_assignment_attempts: int = 3
     confirmation_timeout_minutes: int = 60
     max_notification_retries: int = 3

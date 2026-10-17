@@ -12,6 +12,7 @@ dependencies = [
     "uvicorn[standard]>=0.32",
     "pydantic-settings>=2.6",
     "sqlalchemy>=2.0",
+    "psycopg[binary]>=3.2",
     "alembic>=1.14",
     "pyjwt>=2.9",
     "httpx>=0.27",
@@ -19,6 +20,7 @@ dependencies = [
     "apscheduler>=3.10,<4",
     "google-auth>=2.36",
     "requests>=2.32",
+    "cryptography>=44.0",
 ]
 
 [project.optional-dependencies]

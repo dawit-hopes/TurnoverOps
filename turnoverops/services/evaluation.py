@@ -4,9 +4,11 @@ from datetime import date
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
+from turnoverops.core.config import Settings
 from turnoverops.domain import BLOCKING_TASK_STATUSES, LIVE_ASSIGNMENT_STATES
 from turnoverops.models import Assignment, Cleaner, CleanerProperty, CleaningTask
 from turnoverops.scheduling.engine import BusyInterval, CleanerInput, Decision, JobWindow, decide
+from turnoverops.services.cleaner_calendar import calendar_busy_intervals
 
 
 def cleaner_inputs(db: Session, host_id: str) -> list[CleanerInput]:
@@ -35,6 +37,7 @@ def cleaner_inputs(db: Session, host_id: str) -> list[CleanerInput]:
                 eligible_property_ids=eligible,
                 preferred_property_ids=preferred,
                 unavailable_dates=unavailable,
+                calendar_status=cleaner.calendar_status or "not_connected",
             )
         )
     return inputs
@@ -66,8 +69,17 @@ def busy_intervals(db: Session, host_id: str, *, exclude_task_id: str | None = N
     return intervals
 
 
-def evaluate_window(db: Session, host_id: str, window: JobWindow, *, exclude_task_id: str | None = None) -> Decision:
-    return decide(cleaner_inputs(db, host_id), window, busy_intervals(db, host_id, exclude_task_id=exclude_task_id))
+def evaluate_window(
+    db: Session,
+    host_id: str,
+    window: JobWindow,
+    *,
+    exclude_task_id: str | None = None,
+    settings: Settings | None = None,
+) -> Decision:
+    external = calendar_busy_intervals(db, host_id, settings, window.window_start, window.window_end)
+    busy = busy_intervals(db, host_id, exclude_task_id=exclude_task_id) + external
+    return decide(cleaner_inputs(db, host_id), window, busy)
 
 
 def task_window(task: CleaningTask, timezone_name: str) -> JobWindow:

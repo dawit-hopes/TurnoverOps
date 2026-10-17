@@ -18,6 +18,7 @@ class CleanerInput:
     eligible_property_ids: frozenset[str] | None
     preferred_property_ids: frozenset[str]
     unavailable_dates: frozenset[date] = field(default_factory=frozenset)
+    calendar_status: str = "not_connected"
 
 
 @dataclass(frozen=True)
@@ -26,6 +27,7 @@ class BusyInterval:
     task_id: str
     start: datetime
     end: datetime
+    counts_toward_daily_limit: bool = True
 
 
 @dataclass(frozen=True)
@@ -48,6 +50,7 @@ class Evaluation:
     jobs_that_day: int
     preferred: bool
     slack_seconds: int
+    external_availability_verified: bool = False
 
     @property
     def score(self) -> tuple:
@@ -68,10 +71,13 @@ def describe(evaluation: Evaluation) -> str:
     if not evaluation.feasible:
         return f"{evaluation.cleaner_name} cannot take this job: {', '.join(evaluation.reasons)}"
     start = evaluation.scheduled_start.isoformat() if evaluation.scheduled_start else "unscheduled"
-    return (
+    summary = (
         f"{evaluation.cleaner_name} can start at {start} with {evaluation.jobs_that_day} other jobs that day, "
         f"preferred={str(evaluation.preferred).lower()}, slack={evaluation.slack_seconds // 60} minutes"
     )
+    if not evaluation.external_availability_verified:
+        summary += "; external calendar availability unverified"
+    return summary
 
 
 def _overlaps(start: datetime, end: datetime, busy: BusyInterval) -> bool:
@@ -82,6 +88,8 @@ def evaluate_cleaner(cleaner: CleanerInput, window: JobWindow, busy: list[BusyIn
     reasons: list[str] = []
     if not cleaner.active:
         reasons.append("inactive")
+    if cleaner.calendar_status == "access_error":
+        reasons.append("calendar_unavailable")
     property_zone = ZoneInfo(window.property_timezone)
     job_day = as_utc(window.window_start).astimezone(property_zone).date()
     if job_day in cleaner.unavailable_dates:
@@ -94,19 +102,34 @@ def evaluate_cleaner(cleaner: CleanerInput, window: JobWindow, busy: list[BusyIn
         reasons.append("insufficient_window")
 
     start = None
+    saw_overlap = False
     if not reasons:
         zone = ZoneInfo(cleaner.timezone)
-        start = earliest_start(
-            as_utc(window.window_start),
-            as_utc(window.window_end),
-            duration,
-            zone,
-            set(cleaner.working_days),
-            cleaner.work_start,
-            cleaner.work_end,
-        )
+        cursor = as_utc(window.window_start)
+        deadline = as_utc(window.window_end)
+        while cursor < deadline:
+            candidate = earliest_start(
+                cursor,
+                deadline,
+                duration,
+                zone,
+                set(cleaner.working_days),
+                cleaner.work_start,
+                cleaner.work_end,
+            )
+            if candidate is None:
+                break
+            overlapping = [
+                item for item in busy
+                if item.cleaner_id == cleaner.id and _overlaps(candidate, candidate + duration, item)
+            ]
+            if not overlapping:
+                start = candidate
+                break
+            saw_overlap = True
+            cursor = max(item.end for item in overlapping)
         if start is None:
-            reasons.append("outside_working_hours")
+            reasons.append("overlap" if saw_overlap else "outside_working_hours")
 
     end = start + duration if start is not None else None
     jobs_that_day = 0
@@ -118,7 +141,7 @@ def evaluate_cleaner(cleaner: CleanerInput, window: JobWindow, busy: list[BusyIn
             if _overlaps(start, end, item):
                 reasons.append("overlap")
                 break
-            if item.start.astimezone(property_zone).date() == day:
+            if item.counts_toward_daily_limit and item.start.astimezone(property_zone).date() == day:
                 jobs_that_day += 1
         if cleaner.max_jobs_per_day is not None and jobs_that_day >= cleaner.max_jobs_per_day:
             reasons.append("daily_job_limit")
@@ -136,6 +159,7 @@ def evaluate_cleaner(cleaner: CleanerInput, window: JobWindow, busy: list[BusyIn
         jobs_that_day=jobs_that_day,
         preferred=preferred,
         slack_seconds=slack,
+        external_availability_verified=cleaner.calendar_status == "connected",
     )
 
 

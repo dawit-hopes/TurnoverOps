@@ -22,6 +22,7 @@ def cleaner_out(db: Session, cleaner: Cleaner) -> CleanerOut:
         max_jobs_per_day=cleaner.max_jobs_per_day,
         active=cleaner.active,
         telegram_status=cleaner.telegram_status,
+        calendar_status=cleaner.calendar_status,
         unavailable_dates=list(cleaner.unavailable_dates or []),
         property_ids=[link.property_id for link in links if link.restricts],
         preferred_property_ids=[link.property_id for link in links if link.is_preferred],

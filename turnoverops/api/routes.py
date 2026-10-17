@@ -55,6 +55,7 @@ from turnoverops.schemas import (
 from turnoverops.services.auth import upsert_host
 from turnoverops.services.calendar_sync import calendar_configured, disconnect, save_oauth
 from turnoverops.services.catalog import complete_onboarding, create_cleaner, create_property, onboarding_status, update_cleaner, update_property
+from turnoverops.services.cleaner_mail import send_cleaner_welcome_email
 from turnoverops.services.dashboard import integration_status, snapshot
 from turnoverops.services.evaluation import evaluate_window
 from turnoverops.services.invites import create_invite, revoke_invites
@@ -200,8 +201,10 @@ def list_cleaners(host: CurrentHost, db: Db, limit: int = Query(50, ge=1, le=200
 
 
 @cleaner_router.post("", response_model=CleanerOut, status_code=201)
-def add_cleaner(body: CleanerIn, host: CurrentHost, db: Db) -> CleanerOut:
-    return cleaner_out(db, create_cleaner(db, host, body))
+def add_cleaner(body: CleanerIn, host: CurrentHost, settings: AppSettings, db: Db) -> CleanerOut:
+    cleaner = create_cleaner(db, host, body)
+    send_cleaner_welcome_email(db, cleaner, settings, datetime.now(UTC))
+    return cleaner_out(db, cleaner)
 
 
 @cleaner_router.get("/{cleaner_id}", response_model=CleanerOut)
@@ -389,12 +392,13 @@ def decline(assignment_id: str, host: CurrentHost, settings: AppSettings, db: Db
 
 
 @scheduling_router.post("/preview", response_model=DecisionOut)
-def preview(body: PreviewIn, host: CurrentHost, db: Db) -> DecisionOut:
+def preview(body: PreviewIn, host: CurrentHost, settings: AppSettings, db: Db) -> DecisionOut:
     prop = owned(db, Property, host.id, body.property_id)
     decision = evaluate_window(
         db,
         host.id,
         JobWindow(prop.id, prop.timezone, body.window_start, body.window_end, body.duration_minutes),
+        settings=settings,
     )
     return decision_out(decision)
 
@@ -408,6 +412,7 @@ def evaluate(body: TaskIdIn, host: CurrentHost, settings: AppSettings, db: Db) -
         host.id,
         JobWindow(prop.id, prop.timezone, task.window_start, task.window_end, task.duration_minutes),
         exclude_task_id=task.id,
+        settings=settings,
     )
     alert = None
     needs_cover = task.status in {TaskStatus.at_risk, TaskStatus.unassigned, TaskStatus.blocked}

@@ -63,8 +63,8 @@ def test_overlap_and_daily_limit():
             end=datetime(2026, 11, 3, 12, tzinfo=UTC),
         )
     ]
-    overlapped = decide([cleaner("a")], window(), busy)
-    assert "overlap" in overlapped.rejected[0].reasons
+    shifted = decide([cleaner("a")], window(), busy)
+    assert shifted.selected.scheduled_start == datetime(2026, 11, 3, 12, tzinfo=UTC)
     limited = decide(
         [cleaner("a", max_jobs_per_day=1)],
         window(window_start=datetime(2026, 11, 3, 13, tzinfo=UTC), window_end=datetime(2026, 11, 3, 16, tzinfo=UTC)),

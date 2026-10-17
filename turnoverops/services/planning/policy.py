@@ -138,7 +138,7 @@ def needs_decision(task: TaskView, cleaners: list[CleanerInput], busy: list[Busy
     return not assignment_feasible(task, cleaners, busy)
 
 
-def scope_fingerprint(tasks: list[TaskView], cleaners: list[CleanerInput]) -> str:
+def scope_fingerprint(tasks: list[TaskView], cleaners: list[CleanerInput], busy: list[BusyInterval] | None = None) -> str:
     payload = {
         "tasks": [
             {
@@ -164,8 +164,18 @@ def scope_fingerprint(tasks: list[TaskView], cleaners: list[CleanerInput]) -> st
                 "max": cleaner.max_jobs_per_day,
                 "eligible": sorted(cleaner.eligible_property_ids) if cleaner.eligible_property_ids is not None else None,
                 "unavailable": sorted(item.isoformat() for item in cleaner.unavailable_dates),
+                "calendar_status": cleaner.calendar_status,
             }
             for cleaner in sorted(cleaners, key=lambda item: item.id)
+        ],
+        "busy": [
+            {
+                "cleaner": item.cleaner_id,
+                "task": item.task_id,
+                "start": item.start.isoformat(),
+                "end": item.end.isoformat(),
+            }
+            for item in sorted(busy or [], key=lambda item: (item.cleaner_id, item.start, item.end, item.task_id))
         ],
     }
     return hashlib.sha256(json.dumps(payload, sort_keys=True, default=str).encode()).hexdigest()
@@ -303,7 +313,7 @@ def gate(
     *,
     allow_fast_path: bool,
 ) -> GateResult:
-    fingerprint = scope_fingerprint(tasks, cleaners)
+    fingerprint = scope_fingerprint(tasks, cleaners, busy)
     open_tasks = [task for task in tasks if task.status not in {"completed", "blocked"}]
     if not open_tasks:
         return GateResult(

@@ -317,6 +317,7 @@ class CleanerOut(APIModel):
     max_jobs_per_day: int | None
     active: bool
     telegram_status: str
+    calendar_status: str
     unavailable_dates: list[str]
     property_ids: list[str]
     preferred_property_ids: list[str]

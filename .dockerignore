@@ -1,0 +1,13 @@
+.env
+.env.*
+.venv/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.mypy_cache/
+.git/
+.gitignore
+turnoverops.db
+*.db
+*.sqlite
+*.sqlite3

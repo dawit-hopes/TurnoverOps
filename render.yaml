@@ -1,0 +1,46 @@
+services:
+  - type: web
+    name: turnoverops-api
+    runtime: docker
+    plan: starter
+    dockerfilePath: ./Dockerfile
+    dockerContext: .
+    preDeployCommand: alembic upgrade head
+    healthCheckPath: /health
+    envVars:
+      - key: DATABASE_URL
+        sync: false
+      - key: JWT_SECRET
+        generateValue: true
+      - key: FRONTEND_ORIGIN
+        sync: false
+      - key: APP_BASE_URL
+        sync: false
+      - key: ENABLE_SCHEDULER
+        value: "true"
+      - key: SCHEDULER_INTERVAL_SECONDS
+        value: "60"
+      - key: DEV_MODE
+        value: "false"
+      - key: GOOGLE_CLIENT_ID
+        sync: false
+      - key: GOOGLE_CALENDAR_CLIENT_ID
+        sync: false
+      - key: GOOGLE_CALENDAR_CLIENT_SECRET
+        sync: false
+      - key: GOOGLE_CALENDAR_REDIRECT_URI
+        sync: false
+      - key: CLEANER_GOOGLE_CALENDAR_REDIRECT_URI
+        sync: false
+      - key: GEMINI_API_KEY
+        sync: false
+      - key: TELEGRAM_BOT_TOKEN
+        sync: false
+      - key: TELEGRAM_WEBHOOK_SECRET
+        sync: false
+      - key: SMTP_USERNAME
+        sync: false
+      - key: SMTP_PASSWORD
+        sync: false
+      - key: EMAIL_FROM
+        sync: false

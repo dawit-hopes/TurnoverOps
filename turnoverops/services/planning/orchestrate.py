@@ -35,6 +35,7 @@ from turnoverops.scheduling.plan_schema import (
 from turnoverops.scheduling.validate_plan import validate_plan
 from turnoverops.scheduling.windows import as_utc
 from turnoverops.services.audit import audit
+from turnoverops.services.cleaner_calendar import calendar_busy_intervals
 from turnoverops.services.evaluation import cleaner_inputs
 from turnoverops.services.host_policy import ensure_settings
 from turnoverops.services.planning.alerts import alert_unassigned, alert_unassigned_batch, release_assignment
@@ -252,13 +253,20 @@ def _execute(
             )
 
     _stage(db, run, "reviewing_assignments")
+    views = _views(db, run.host_id, properties, now, settings.planning_horizon_hours)
+    calendar_busy = calendar_busy_intervals(
+        db,
+        run.host_id,
+        settings,
+        now,
+        now + timedelta(hours=settings.planning_horizon_hours),
+    )
     cleaners = cleaner_inputs(db, run.host_id)
+    _record_locked_conflicts(db, views, cleaners, now, calendar_busy)
     views = _views(db, run.host_id, properties, now, settings.planning_horizon_hours)
-    _record_locked_conflicts(db, views, cleaners, now)
-    views = _views(db, run.host_id, properties, now, settings.planning_horizon_hours)
-    busy = _busy(views)
+    busy = _busy(views) + calendar_busy
     scope = expand_scope(views, seeds, cleaners, busy)
-    fingerprint = scope_fingerprint(scope, cleaners)
+    fingerprint = scope_fingerprint(scope, cleaners, busy)
     run.tasks_considered = len(scope)
     run.scope_fingerprint = fingerprint
     db.commit()
@@ -882,8 +890,8 @@ def _leave_unassigned(db, host, task: TaskView, settings, now, reason: str, expl
         )
 
 
-def _record_locked_conflicts(db, views: list[TaskView], cleaners, now: datetime) -> None:
-    busy = _busy(views)
+def _record_locked_conflicts(db, views: list[TaskView], cleaners, now: datetime, calendar_busy=None) -> None:
+    busy = _busy(views) + list(calendar_busy or [])
     for task in views:
         if not (task.started or task.status == "in_progress"):
             continue
