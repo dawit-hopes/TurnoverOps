@@ -31,7 +31,7 @@ class Settings(BaseSettings):
     scheduling_max_output_tokens: int = 2048
     scheduling_max_repair_attempts: int = 2
     scheduling_temperature: float = 0
-    planning_horizon_hours: int = 48
+    planning_horizon_hours: int = 24 * 90
     planning_lock_minutes: int = 15
     email_from: str = ""
     smtp_host: str = "smtp.gmail.com"

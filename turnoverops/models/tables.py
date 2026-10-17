@@ -52,7 +52,6 @@ class Property(Timestamped, Base):
     id: Mapped[str] = mapped_column(String(36), primary_key=True, default=_uuid)
     host_id: Mapped[str] = mapped_column(ForeignKey("hosts.id"), index=True)
     name: Mapped[str] = mapped_column(String(200))
-    address: Mapped[str | None] = mapped_column(String(300))
     timezone: Mapped[str] = mapped_column(String(64))
     default_checkout_time: Mapped[time] = mapped_column(Time)
     default_checkin_time: Mapped[time] = mapped_column(Time)

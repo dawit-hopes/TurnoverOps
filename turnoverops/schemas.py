@@ -134,7 +134,6 @@ class SettingsUpdate(APIModel):
 
 class PropertyIn(APIModel):
     name: str = Field(min_length=1, max_length=200)
-    address: str | None = None
     timezone: str | None = None
     default_checkout_time: time | None = None
     default_checkin_time: time | None = None
@@ -158,7 +157,6 @@ class PropertyIn(APIModel):
 
 class PropertyUpdate(APIModel):
     name: str | None = Field(default=None, min_length=1, max_length=200)
-    address: str | None = None
     timezone: str | None = None
     default_checkout_time: time | None = None
     default_checkin_time: time | None = None
@@ -183,7 +181,6 @@ class PropertyUpdate(APIModel):
 class PropertyOut(APIModel):
     id: str
     name: str
-    address: str | None
     timezone: str
     default_checkout_time: time
     default_checkin_time: time

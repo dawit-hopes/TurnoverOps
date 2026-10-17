@@ -55,7 +55,6 @@ def assignment_fingerprint(assignment: Assignment, task: CleaningTask, prop: Pro
             str(task.duration_minutes),
             prop.id,
             prop.name,
-            prop.address or "",
             task.instructions or "",
         ]
     )
@@ -357,7 +356,6 @@ def email_manager_rejection(db: Session, assignment: Assignment, settings: Setti
     subject = f"Cleaner declined — {prop.name} — {_subject_date(assignment.scheduled_start, zone)}"
     lines = [
         f"{cleaner_name} declined the cleaning at {prop.name}.",
-        f"Address: {_address_line(prop)}",
         f"When: {when}",
         f"Deadline: {deadline} ({_zone_label(zone)})",
         f"Reason: {reason}",
@@ -398,7 +396,6 @@ def render_assignment_email(cleaner, prop, task, assignment, token: str, setting
         "You only need to act if you cannot do it. There is no accept step.",
         "",
         f"Property: {prop.name}",
-        f"Address: {job['address']}",
         f"Date: {job['date']}",
         f"Start: {job['start']}",
         f"End: {job['end']}",
@@ -428,7 +425,6 @@ def render_assignment_email(cleaner, prop, task, assignment, token: str, setting
     You only need to act if you cannot do it. There is no accept step.</p>
     <ul>
       <li>Property: {html.escape(prop.name)}</li>
-      <li>Address: {html.escape(job['address'])}</li>
       <li>Date: {html.escape(job['date'])}</li>
       <li>Start: {html.escape(job['start'])}</li>
       <li>End: {html.escape(job['end'])}</li>
@@ -473,7 +469,7 @@ def render_weekly_email(cleaner, jobs: list[dict], week_label: str, settings: Se
             html_parts.append(f"<h2>{html.escape(job['day_label'])}</h2>")
         text.extend(
             [
-                f"{job['start']}–{job['end']} · {job['property']} · {job['address']}",
+                f"{job['start']}–{job['end']} · {job['property']}",
                 f"Duration {job['duration']}. Deadline {job['deadline']}.",
             ]
         )
@@ -484,7 +480,6 @@ def render_weekly_email(cleaner, jobs: list[dict], week_label: str, settings: Se
         html_parts.append(
             "<p>"
             f"{html.escape(job['start'])}–{html.escape(job['end'])} · {html.escape(job['property'])}<br>"
-            f"{html.escape(job['address'])}<br>"
             f"Duration {html.escape(job['duration'])}. Deadline {html.escape(job['deadline'])}."
             f"{instructions}<br>"
             f"<a href=\"{html.escape(job['calendar_url'])}\">Add to Google Calendar</a><br>"
@@ -499,13 +494,12 @@ def _job_view(cleaner, prop, task, assignment, token: str, settings: Settings) -
     start = assignment.scheduled_start.astimezone(zone)
     end = assignment.scheduled_end.astimezone(zone)
     deadline = task.window_end.astimezone(zone)
-    address = _address_line(prop)
     instructions = (task.instructions or "").strip()
     calendar = google_calendar_url(
         title=f"Cleaning at {prop.name}",
         start=assignment.scheduled_start,
         end=assignment.scheduled_end,
-        location=address if prop.address else prop.name,
+        location=prop.name or "",
         details=(
             f"Assigned cleaning at {prop.name}. "
             "This link only opens a calendar form. "
@@ -515,7 +509,6 @@ def _job_view(cleaner, prop, task, assignment, token: str, settings: Settings) -
     )
     return {
         "property": prop.name,
-        "address": address,
         "date": _subject_date(assignment.scheduled_start, zone),
         "day_key": start.date().isoformat(),
         "day_label": _day_label(start),
@@ -578,7 +571,6 @@ def _confirm_page(prop, task, assignment, raw_token: str, settings: Settings) ->
     end = assignment.scheduled_end.astimezone(zone)
     body = (
         f"<p>Decline only this cleaning at {html.escape(prop.name)}.</p>"
-        f"<p>{html.escape(_address_line(prop))}</p>"
         f"<p>{html.escape(_day_label(start))} · {_clock(start)}–{_clock(end)} "
         f"({html.escape(_zone_label(zone))})</p>"
         "<p>This page does not decline the job until you submit the form.</p>"
@@ -697,12 +689,6 @@ def _finish(db, note, status: str, error: str, now: datetime, *, transient: bool
         reason="Email is not set up, so the message was not sent." if status == "not_configured" else "The email could not be sent.",
         details={"channel": "smtp", "message_type": note.message_type, "status": status},
     )
-
-
-def _address_line(prop: Property) -> str:
-    if prop.address and prop.address.strip():
-        return prop.address.strip()
-    return f"{prop.name} (no street address on file)"
 
 
 def _base_url(settings: Settings) -> str:

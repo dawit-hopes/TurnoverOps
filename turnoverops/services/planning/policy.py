@@ -176,6 +176,15 @@ def _competes(left: TaskView, right: TaskView, cleaners: list[CleanerInput], bus
         return False
     if not needs_decision(left, cleaners, busy) and not needs_decision(right, cleaners, busy):
         return False
+    return any(
+        _competes_on_cleaner(left, right, cleaner, cleaners, busy)
+        for cleaner in cleaners
+    )
+
+
+def _competes_on_cleaner(left: TaskView, right: TaskView, cleaner: CleanerInput, cleaners: list[CleanerInput], busy: list[BusyInterval]) -> bool:
+    if is_locked(left) or is_locked(right):
+        return False
     reduced = [item for item in busy if item.task_id not in {left.id, right.id}]
     # Keep feasible confirmed work as a fixed block by putting it back when that task is settled.
     for task in (left, right):
@@ -183,7 +192,31 @@ def _competes(left: TaskView, right: TaskView, cleaners: list[CleanerInput], bus
             reduced.append(
                 BusyInterval(task.assigned_cleaner_id, task.id, task.scheduled_start, task.scheduled_end)
             )
-    return bool(feasible_ids(left, cleaners, reduced) & feasible_ids(right, cleaners, reduced))
+    left_option = next(
+        (item for item in decide(cleaners, _window(left), _busy_for(left, reduced)).ranked_feasible if item.cleaner_id == cleaner.id),
+        None,
+    )
+    right_option = next(
+        (item for item in decide(cleaners, _window(right), _busy_for(right, reduced)).ranked_feasible if item.cleaner_id == cleaner.id),
+        None,
+    )
+    if left_option is None or right_option is None:
+        return False
+    if left_option.scheduled_start is None or left_option.scheduled_end is None:
+        return False
+    if right_option.scheduled_start is None or right_option.scheduled_end is None:
+        return False
+    overlaps = left_option.scheduled_start < right_option.scheduled_end and right_option.scheduled_start < left_option.scheduled_end
+    from zoneinfo import ZoneInfo
+
+    zone = ZoneInfo(cleaner.timezone)
+    same_day = left_option.scheduled_start.astimezone(zone).date() == right_option.scheduled_start.astimezone(zone).date()
+    exceeds_daily_limit = (
+        same_day
+        and cleaner.max_jobs_per_day is not None
+        and max(left_option.jobs_that_day, right_option.jobs_that_day) + 2 > cleaner.max_jobs_per_day
+    )
+    return overlaps or exceeds_daily_limit
 
 
 def _components(tasks: list[TaskView], cleaners: list[CleanerInput], busy: list[BusyInterval]) -> list[list[TaskView]]:
@@ -215,8 +248,8 @@ def _other_demands(task: TaskView, cleaner_id: str, tasks: list[TaskView], clean
     for other in tasks:
         if other.id == task.id or not needs_decision(other, cleaners, busy):
             continue
-        reduced = [item for item in busy if item.task_id not in {task.id, other.id}]
-        if cleaner_id in feasible_ids(other, cleaners, reduced):
+        cleaner = next((item for item in cleaners if item.id == cleaner_id), None)
+        if cleaner is not None and _competes_on_cleaner(task, other, cleaner, cleaners, busy):
             return True
     return False
 
@@ -286,7 +319,7 @@ def gate(
             task = component[0]
             decision = decide(cleaners, _window(task), _busy_for(task, busy))
             if (
-                len(decision.ranked_feasible) == 1
+                decision.selected is not None
                 and not _other_demands(task, decision.selected.cleaner_id, open_tasks, cleaners, busy)
             ):
                 chosen = decision.selected

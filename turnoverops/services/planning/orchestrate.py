@@ -37,7 +37,7 @@ from turnoverops.scheduling.windows import as_utc
 from turnoverops.services.audit import audit
 from turnoverops.services.evaluation import cleaner_inputs
 from turnoverops.services.host_policy import ensure_settings
-from turnoverops.services.planning.alerts import alert_unassigned, release_assignment
+from turnoverops.services.planning.alerts import alert_unassigned, alert_unassigned_batch, release_assignment
 from turnoverops.services.planning.policy import (
     SKIP_DUPLICATE,
     SKIP_EMPTY,
@@ -263,13 +263,13 @@ def _execute(
     run.scope_fingerprint = fingerprint
     db.commit()
 
-    if _fingerprint_seen(db, run):
+    fingerprint_seen = _fingerprint_seen(db, run)
+    pending_unassigned = _still_unassigned(db, scope, cleaners, busy) if fingerprint_seen else []
+    if fingerprint_seen and not pending_unassigned:
         preserved = _preserve_payload(scope, cleaners, busy)
-        unassigned_rows = _still_unassigned(db, scope, cleaners, busy)
+        unassigned_rows = pending_unassigned
         warnings = _removed_today(db, run.host_id, now)
         summary = "Nothing changed, so the previous plan was kept."
-        if unassigned_rows:
-            summary = "Nothing changed, so the previous plan was kept. Some cleanings are still unassigned."
         return _complete(
             db,
             run,
@@ -440,6 +440,9 @@ def _execute(
         force_review=force_review,
         email_client=getattr(client, "email_client", None) if client is not None else None,
     )
+    if unassigned_rows:
+        items = _notify_unassigned_batch(db, host, scope, unassigned_rows)
+        alert_unassigned_batch(db, host, items, settings, email_client=getattr(client, "email_client", None) if client is not None else None)
     conflicts = [*conflicts, *failures_left]
     human = human or bool(unassigned_rows) or bool(conflicts)
     preserved_rows = [{"task_id": task_id, "explanation": "Existing assignment remains feasible"} for task_id in preserved_ids]
@@ -547,7 +550,23 @@ def _coordinate_component(run, component, cleaners, cleaner_map, by_id, busy, se
         provider, model = completion.provider, completion.model
         plan, failures = _interpret(completion, run, by_id, cleaner_map, busy)
     if failures:
-        plan = None
+        fallback = _deterministic_component_plan(run, component, cleaners, busy)
+        problems = validate_plan(
+            fallback,
+            tasks=by_id,
+            cleaners=cleaner_map,
+            busy=busy,
+            expected_run_id=run.id,
+            expected_date=date.fromisoformat(run.operational_date),
+            expected_timezone=run.timezone,
+        )
+        if not problems:
+            plan = fallback
+            failures = []
+            summary = fallback.reasoning_summary
+        else:
+            plan = None
+            failures = [item.as_dict() for item in problems]
     elif plan is not None:
         summary = plan.reasoning_summary
     return {
@@ -561,6 +580,88 @@ def _coordinate_component(run, component, cleaners, cleaner_map, by_id, busy, se
         "model": model,
         "summary": summary,
     }
+
+
+def _deterministic_component_plan(run, component, cleaners, busy) -> SchedulePlan:
+    """Build a validated ranked schedule when the model cannot return a usable plan."""
+    from turnoverops.scheduling.engine import decide
+    from turnoverops.services.planning.policy import _window
+
+    component_ids = {task.id for task in component}
+    blocked = [item for item in busy if item.task_id not in component_ids]
+    proposals: list[AssignmentProposal] = []
+    unassigned: list[UnassignedProposal] = []
+    from turnoverops.services.planning.policy import feasible_ids
+
+    ordered = sorted(
+        component,
+        key=lambda task: (
+            len(feasible_ids(task, cleaners, [item for item in blocked if item.task_id != task.id])),
+            task.window_end,
+            task.window_start,
+            task.id,
+        ),
+    )
+    for task in ordered:
+        decision = decide(cleaners, _window(task), [item for item in blocked if item.task_id != task.id])
+        chosen = decision.selected
+        if chosen is None or chosen.scheduled_start is None or chosen.scheduled_end is None:
+            alternatives = [
+                f"{item.cleaner_name}: {', '.join(item.reasons)}"
+                for item in decision.rejected
+            ]
+            unassigned.append(
+                UnassignedProposal(
+                    task_id=task.id,
+                    reason_code="no_feasible_cleaner",
+                    explanation="No eligible cleaner can take this turnover",
+                    attempted_alternatives=alternatives or ["No active cleaner is eligible"],
+                    next_action="Review availability or arrange coverage",
+                )
+            )
+            continue
+        proposals.append(
+            AssignmentProposal(
+                task_id=task.id,
+                cleaner_id=chosen.cleaner_id,
+                start=chosen.scheduled_start,
+                end=chosen.scheduled_end,
+                deadline=task.window_end,
+                explanation=f"Automatically selected the highest ranked feasible cleaner: {describe(chosen)}"[:500],
+            )
+        )
+        blocked.append(BusyInterval(chosen.cleaner_id, task.id, chosen.scheduled_start, chosen.scheduled_end))
+
+    changing = {task.id for task in component if task.assigned_cleaner_id}
+    creates = [item for item in proposals if item.task_id not in changing]
+    changes = [item for item in proposals if item.task_id in changing]
+    return SchedulePlan(
+        planning_run_id=run.id,
+        operational_date=date.fromisoformat(run.operational_date),
+        timezone=run.timezone,
+        assignments_to_create=creates,
+        assignments_to_change=changes,
+        assignments_to_preserve=[],
+        unassigned_tasks=unassigned,
+        conflicts=[],
+        warnings=["The agent response could not be used; a validated deterministic schedule was applied."],
+        reasoning_summary="Applied the highest ranked feasible cleaners after the agent response could not be used.",
+        requires_human_review=bool(unassigned),
+    )
+
+
+def _notify_unassigned_batch(db, host, scope, rows):
+    """Gather unresolved items for one grouped host email after this run."""
+    by_id = {task.id: task for task in scope}
+    items = []
+    for row in rows:
+        task = by_id.get(row.get("task_id"))
+        if task is None:
+            continue
+        prop = db.get(Property, task.property_id)
+        if prop is not None:
+            items.append((task, prop, str(row.get("explanation") or "No validated cleaner is available"), []))
+    return items
 
 
 def _agent_failure(message: str, component: list[TaskView]) -> dict:
@@ -611,11 +712,9 @@ def _apply(
     force_review: bool,
     email_client,
 ) -> tuple[int, int, list[str], list[dict], list[str], list[dict], list[dict], list[dict]]:
-    dispatch = (
-        not force_review
-        and host_settings.plan_approved_at is not None
-        and host_settings.dispatch_mode == "automatic"
-    )
+    # Once a plan has been validated, the agent has enough information to act.
+    # Keep onboarding's explicit first-plan review, then dispatch future decisions.
+    dispatch = not force_review
     created = 0
     changed = 0
     preserved_ids: list[str] = []
@@ -668,7 +767,7 @@ def _apply(
             "unassigned",
             "No validated assignment was produced for this turnover",
             cleaners,
-            email_client,
+            None,
         )
         unassigned_rows.append(
             _labeled(
@@ -779,7 +878,7 @@ def _leave_unassigned(db, host, task: TaskView, settings, now, reason: str, expl
             settings,
             reason=reason,
             cleaner_ids=[cleaner.id for cleaner in cleaners],
-            email_client=email_client,
+            email_client=lambda **_: {"suppressed": "included in planning run digest"},
         )
 
 

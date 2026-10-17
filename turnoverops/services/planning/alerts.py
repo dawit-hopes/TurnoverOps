@@ -1,14 +1,17 @@
 """Host dashboard alerts and optional cleaner dispatch for a validated plan."""
 
 import hashlib
+import html
 from datetime import UTC, datetime
+from urllib.parse import quote
 
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from turnoverops.core.config import Settings
 from turnoverops.domain import LIVE_ASSIGNMENT_STATES
-from turnoverops.integrations.email_api import EmailError, EmailNotConfigured, send_email
+from turnoverops.integrations.email_api import EmailError, EmailNotConfigured
+from turnoverops.integrations.smtp_email import SmtpError, SmtpNotConfigured, send_smtp_email
 from turnoverops.models import Assignment, CleaningTask, Host, Notification, NotificationDelivery, Property
 from turnoverops.services.audit import audit
 from turnoverops.services.host_copy import spoken_time
@@ -51,31 +54,47 @@ def alert_unassigned(
     cleaner_ids: list[str],
     email_client=None,
 ) -> NotificationDelivery | None:
-    key = issue_key(task, cleaner_ids, reason)
-    existing = db.scalar(
-        select(NotificationDelivery).where(
-            NotificationDelivery.host_id == host.id,
-            NotificationDelivery.dedupe_key == key,
-        )
-    )
+    return alert_unassigned_batch(db, host, [(task, prop, reason, cleaner_ids)], settings, email_client=email_client)
+
+
+def alert_unassigned_batch(db, host, items, settings, *, email_client=None) -> NotificationDelivery | None:
+    """Send one host alert with resolution links for all uncovered cleanings."""
+    unique = {}
+    for task, prop, reason, cleaner_ids in items:
+        unique[task.id] = (task, prop, reason, cleaner_ids)
+    items = list(unique.values())
+    if not items:
+        return None
+    keys = sorted(issue_key(task, cleaner_ids, reason) for task, _, reason, cleaner_ids in items)
+    digest = hashlib.sha256("|".join(keys).encode()).hexdigest()[:24]
+    key = f"unassigned-batch:{host.id}:{digest}"
+    existing = db.scalar(select(NotificationDelivery).where(NotificationDelivery.host_id == host.id, NotificationDelivery.dedupe_key == key))
     if existing is not None:
         return None
-    deadline = spoken_time(task.window_end, prop.timezone)
-    body = (
-        f"Cleaning assignment requires attention. No available cleaner can complete the cleaning at {prop.name} "
-        f"before {deadline}. The task remains unassigned. Review cleaner availability, adjust the schedule if possible, "
-        "or arrange additional coverage."
+    lines = ["These cleanings have no validated cleaner available:"]
+    links = []
+    frontend_origin = next(
+        (origin.strip().rstrip("/") for origin in settings.frontend_origin.split(",") if origin.strip()),
+        "http://localhost:5173",
     )
-    note = notify_host(db, host.id, "task_unassigned", body, task_id=task.id, dedupe_key=key)
+    for task, prop, reason, _ in items:
+        deadline = spoken_time(task.window_end, prop.timezone)
+        url = f"{frontend_origin}/overview?task={quote(task.id)}"
+        lines.append(f"• {prop.name} — deadline {deadline}. {reason[:180]}")
+        lines.append(f"  Resolve: {url}")
+        links.append((prop.name, deadline, url, reason))
+    lines.append("Open a cleaning link to adjust the schedule or arrange alternative coverage.")
+    body = "\n".join(lines)
+    note = notify_host(db, host.id, "task_unassigned_batch", body, dedupe_key=key)
     delivery = NotificationDelivery(
         host_id=host.id,
         notification_id=note.id,
-        task_id=task.id,
+        task_id=None,
         channel="email",
         status="pending",
         dedupe_key=key,
         recipient=host.email,
-        subject="Cleaning assignment requires attention",
+        subject=f"{len(items)} cleaning{'s' if len(items) != 1 else ''} need coverage",
         body=body,
     )
     db.add(delivery)
@@ -84,18 +103,23 @@ def alert_unassigned(
         if callable(email_client):
             payload = email_client(to=host.email, subject=delivery.subject, body=body)
         else:
-            payload = send_email(
+            html_body = "<p>These cleanings have no validated cleaner available:</p><ul>" + "".join(
+                f'<li><strong>{html.escape(name)}</strong> — deadline {html.escape(deadline)}. '
+                f'{html.escape(reason[:180])} <a href="{html.escape(url, quote=True)}">Resolve cleaning</a></li>'
+                for name, deadline, url, reason in links
+            ) + "</ul><p>Open a cleaning link to adjust the schedule or arrange alternative coverage.</p>"
+            payload = send_smtp_email(
                 settings,
                 to=host.email,
-                subject=delivery.subject or "Cleaning assignment requires attention",
-                body=body,
-                client=email_client,
+                subject=delivery.subject or "Cleanings need coverage",
+                text=body,
+                html=html_body,
             )
-    except EmailNotConfigured:
+    except (EmailNotConfigured, SmtpNotConfigured):
         delivery.status = "not_configured"
         delivery.error = "Email provider is not configured"
         delivery.provider_response = {"status": "not_configured"}
-    except EmailError as exc:
+    except (EmailError, SmtpError) as exc:
         delivery.status = "failed"
         delivery.error = str(exc)[:500]
         delivery.provider_response = {"status_code": exc.status_code}
@@ -110,7 +134,7 @@ def alert_unassigned(
         entity_type="notification_delivery",
         entity_id=delivery.id,
         reason=body[:500],
-        details={"channel": "email", "status": delivery.status, "task_id": task.id},
+        details={"channel": "email", "status": delivery.status, "task_ids": [task.id for task, _, _, _ in items]},
     )
     return delivery
 

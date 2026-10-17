@@ -120,7 +120,7 @@ def _wide(client, headers, prop, name):
     )
 
 
-def _one_job(client, monkeypatch, *, cleaners=2, address="12 Bole Road, Addis Ababa"):
+def _one_job(client, monkeypatch, *, cleaners=2):
     inbox = Inbox().install(monkeypatch)
     _smtp(client)
     headers = login(client)
@@ -128,7 +128,6 @@ def _one_job(client, monkeypatch, *, cleaners=2, address="12 Bole Road, Addis Ab
         client,
         headers,
         name="Harbor & Co",
-        address=address,
         timezone="Africa/Addis_Ababa",
         cleaning_duration_minutes=60,
     )
@@ -170,7 +169,7 @@ def test_successful_send_and_smtp_failure(client, monkeypatch):
     inbox = Inbox().install(monkeypatch)
     _smtp(client)
     headers = login(client)
-    prop = create_property(client, headers, name="Harbor & Co", address="12 Bole Road", timezone="UTC")
+    prop = create_property(client, headers, name="Harbor & Co", timezone="UTC")
     create_cleaner(client, headers, "Ada", work_start="00:00:00", work_end="23:00:00", preferred_property_ids=[prop["id"]])
     sync(client, headers, prop["id"], STAYS)
     synced = _assignment_count(client)
@@ -179,7 +178,7 @@ def test_successful_send_and_smtp_failure(client, monkeypatch):
     text = _plain(message)
     assert "already confirmed" in text
     assert "Accept" not in text
-    assert "12 Bole Road" in text
+    assert "Property: Harbor & Co" in text
     assert "https://calendar.google.com/calendar/render?" in text
     assert "/reject/" in text
     task = next(item for item in list_tasks(client, headers, prop["id"]) if item["assignment"])
@@ -260,7 +259,7 @@ def test_weekly_email_groups_days_and_skips_per_job_duplicates(client, monkeypat
     inbox = Inbox().install(monkeypatch)
     _smtp(client)
     headers = login(client)
-    prop = create_property(client, headers, name="Harbor", address="12 Bole Road", timezone="Africa/Addis_Ababa")
+    prop = create_property(client, headers, name="Harbor", timezone="Africa/Addis_Ababa")
     ada = _wide(client, headers, prop, "Ada")
     sync(client, headers, prop["id"], WEEK)
     inbox.messages.clear()
@@ -334,8 +333,8 @@ def test_unrelated_assignment_stays_and_no_replacement_escalates(client, monkeyp
     inbox = Inbox().install(monkeypatch)
     _smtp(client)
     headers = login(client)
-    first = create_property(client, headers, name="Harbor", address="12 Bole Road", timezone="Africa/Addis_Ababa")
-    second = create_property(client, headers, name="Garden", address="4 Garden Lane", timezone="Africa/Addis_Ababa")
+    first = create_property(client, headers, name="Harbor", timezone="Africa/Addis_Ababa")
+    second = create_property(client, headers, name="Garden", timezone="Africa/Addis_Ababa")
     ada = create_cleaner(
         client,
         headers,
@@ -364,7 +363,6 @@ def test_unrelated_assignment_stays_and_no_replacement_escalates(client, monkeyp
     assert _task_count(client) == task_count
     manager = _plain(next(message for message in reversed(inbox.messages) if message["Subject"].startswith("Cleaner declined")))
     assert "Harbor" in manager
-    assert "12 Bole Road" in manager
     assert "No replacement" in manager
     assert ada["id"] == harbor["assignment"]["cleaner_id"]
 
