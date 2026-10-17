@@ -520,6 +520,19 @@ class CalendarCallbackIn(APIModel):
     state: str = Field(min_length=1)
 
 
+class ConflictChatIn(APIModel):
+    message: str = Field(min_length=1, max_length=1000)
+    confirmation_token: str | None = Field(default=None, max_length=2000)
+
+
+class ConflictChatOut(APIModel):
+    reply: str
+    action: str
+    confirmation_token: str | None = None
+    cleaner_id: str | None = None
+    cleaner_name: str | None = None
+
+
 class IntegrationOut(APIModel):
     google_login: dict
     gemini: dict

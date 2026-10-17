@@ -17,6 +17,8 @@ from turnoverops.schemas import (
     AuditOut,
     AuthOut,
     CalendarCallbackIn,
+    ConflictChatIn,
+    ConflictChatOut,
     CalendarConnectOut,
     CleanerIn,
     CleanerOut,
@@ -329,6 +331,25 @@ def propose(task_id: str, body: ProposeIn, host: CurrentHost, settings: AppSetti
     prop = owned(db, Property, host.id, task.property_id)
     reassign_task(db, task, prop, datetime.now(UTC), settings, cleaner_id=body.cleaner_id)
     return tasks_out(db, [task])[0]
+
+
+@task_router.post("/{task_id}/conflict-chat", response_model=ConflictChatOut)
+def conflict_chat(task_id: str, body: ConflictChatIn, host: CurrentHost, settings: AppSettings, db: Db) -> ConflictChatOut:
+    from turnoverops.services.conflict_chat import handle_conflict_message
+
+    task = owned(db, CleaningTask, host.id, task_id)
+    prop = owned(db, Property, host.id, task.property_id)
+    result = handle_conflict_message(
+        db,
+        task,
+        prop,
+        host.id,
+        body.message,
+        settings,
+        datetime.now(UTC),
+        confirmation_token=body.confirmation_token,
+    )
+    return ConflictChatOut(**result)
 
 
 @task_router.post("/{task_id}/reassign", response_model=TaskOut)

@@ -1,5 +1,6 @@
 import pytest
 from fastapi.testclient import TestClient
+from pydantic_settings import SettingsConfigDict
 
 from turnoverops.app import create_app
 from turnoverops.core.config import Settings
@@ -8,10 +9,13 @@ from turnoverops.integrations.google_identity import GoogleIdentity
 from turnoverops.models import Base
 
 
+class TestSettings(Settings):
+    model_config = SettingsConfigDict(env_file=None, extra="ignore")
+
+
 @pytest.fixture
-def settings(tmp_path) -> Settings:
-    return Settings(
-        _env_file=None,
+def settings(tmp_path) -> TestSettings:
+    return TestSettings(
         database_url=f"sqlite:///{tmp_path}/test.db",
         jwt_secret="test-secret-that-is-long-enough-for-hs256",
         google_client_id="test-client",

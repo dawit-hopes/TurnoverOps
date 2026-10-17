@@ -22,7 +22,7 @@ services:
       - key: ENABLE_SCHEDULER
         value: "true"
       - key: SCHEDULER_INTERVAL_SECONDS
-        value: "60"
+        value: "300"
       - key: DEV_MODE
         value: "false"
       - key: GOOGLE_CLIENT_ID

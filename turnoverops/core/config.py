@@ -24,11 +24,11 @@ class Settings(BaseSettings):
     max_notification_retries: int = 3
     notification_retry_seconds: int = 60
     enable_scheduler: bool = True
-    scheduler_interval_seconds: int = 60
+    scheduler_interval_seconds: int = 300
     feed_timeout_seconds: float = 10.0
     feed_max_bytes: int = 1_000_000
     invite_ttl_hours: int = 24 * 7
-    scheduling_model: str = "gemini-2.5-flash"
+    scheduling_model: str = "gemini-3.5-flash"
     scheduling_max_output_tokens: int = 2048
     scheduling_max_repair_attempts: int = 2
     scheduling_temperature: float = 0
@@ -46,7 +46,7 @@ class Settings(BaseSettings):
     scheduling_output_usd_per_million: float | None = None
 
     def resolved_scheduling_model(self) -> str:
-        return self.scheduling_model or self.gemini_model or "gemini-2.5-flash"
+        return self.scheduling_model or self.gemini_model or "gemini-3.5-flash"
 
 
 def get_settings() -> Settings:
