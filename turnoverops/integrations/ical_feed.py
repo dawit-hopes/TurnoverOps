@@ -127,6 +127,7 @@ def parse_ical(
             continue
         status = str(component.get("status") or "").upper()
         summary = component.get("summary")
+        summary_text = str(summary)[:300] if summary else None
         seen.add(uid)
         snapshots.append(
             ReservationSnapshot(
@@ -134,7 +135,8 @@ def parse_ical(
                 start_at=start_at,
                 end_at=end_at,
                 cancelled=status == "CANCELLED",
-                summary=str(summary)[:300] if summary else None,
+                summary=summary_text,
+                guest_name=summary_text,
                 source="ical",
             )
         )

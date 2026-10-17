@@ -72,6 +72,7 @@ def create_property(client, headers, **overrides) -> dict:
 def create_cleaner(client, headers, name: str, **overrides) -> dict:
     body = {
         "name": name,
+        "email": f"{name.lower().replace(' ', '.')}@example.com",
         "timezone": "UTC",
         "working_days": [0, 1, 2, 3, 4, 5, 6],
         "work_start": "09:00:00",

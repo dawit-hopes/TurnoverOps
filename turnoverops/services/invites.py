@@ -34,7 +34,7 @@ def create_invite(db: Session, cleaner: Cleaner, settings: Settings, now: dateti
     )
     if cleaner.telegram_status != "connected":
         cleaner.telegram_status = "pending"
-    username = (settings.telegram_bot_username or "TurnoverOpsBot").lstrip("@")
+    username = (settings.telegram_bot_username or "OfficialMiseAIBot").lstrip("@/")
     audit(
         db,
         host_id=cleaner.host_id,

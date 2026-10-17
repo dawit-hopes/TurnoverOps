@@ -41,14 +41,13 @@ def test_reservation_change_proposes_a_replacement_that_is_not_confirmed(client)
     headers, prop, ada, boa = _setup(client)
     sync(client, headers, prop["id"], STAYS)
     original = _gap(client, headers, prop["id"])
-    assert original["status"] == "awaiting_confirmation"
+    assert original["status"] == "confirmed"
+    assert original["assignment"]["state"] == "accepted"
     assert original["assignment"]["cleaner_id"] == ada["id"]
-    accepted = client.post(f"/assignments/{original['assignment']['id']}/accept", headers=headers)
-    assert accepted.json()["status"] == "confirmed"
     sync(client, headers, prop["id"], LATER)
     updated = _gap(client, headers, prop["id"])
-    assert updated["status"] == "awaiting_confirmation"
-    assert updated["assignment"]["state"] == "awaiting_confirmation"
+    assert updated["status"] == "confirmed"
+    assert updated["assignment"]["state"] == "accepted"
     assert updated["assignment"]["cleaner_id"] == boa["id"]
     assert updated["assigned_cleaner_id"] == boa["id"]
 
@@ -57,10 +56,11 @@ def test_accept_confirms_assignment(client):
     headers, prop, ada, _boa = _setup(client)
     sync(client, headers, prop["id"], STAYS)
     task = _gap(client, headers, prop["id"])
+    assert task["status"] == "confirmed"
+    assert task["assignment"]["state"] == "accepted"
+    assert task["assignment"]["cleaner_id"] == ada["id"]
     response = client.post(f"/assignments/{task['assignment']['id']}/accept", headers=headers)
-    body = response.json()
-    assert body["status"] == "confirmed"
-    assert body["assignment"]["state"] == "accepted"
+    assert response.status_code == 409
 
 
 def test_decline_stops_at_the_retry_limit(client):
@@ -68,14 +68,12 @@ def test_decline_stops_at_the_retry_limit(client):
     cy = create_cleaner(client, headers, "Cy", work_start="13:00:00", work_end="18:00:00")
     dee = create_cleaner(client, headers, "Dee", work_start="13:00:00", work_end="18:00:00")
     sync(client, headers, prop["id"], STAYS)
-    first = _gap(client, headers, prop["id"])
-    client.post(f"/assignments/{first['assignment']['id']}/accept", headers=headers)
     sync(client, headers, prop["id"], LATER)
     current = _gap(client, headers, prop["id"])
     assert current["assignment"]["cleaner_id"] == boa["id"]
     declined = client.post(f"/assignments/{current['assignment']['id']}/decline", json={}, headers=headers)
     second = declined.json()
-    assert second["status"] == "awaiting_confirmation"
+    assert second["status"] == "confirmed"
     assert second["assignment"]["cleaner_id"] in {cy["id"], dee["id"]}
     final = client.post(f"/assignments/{second['assignment']['id']}/decline", json={}, headers=headers).json()
     assert final["status"] == "at_risk"
@@ -99,6 +97,20 @@ def test_no_feasible_cleaner_escalates(client):
     assert dashboard["needs_attention"]
     activity = client.get("/activity", params={"event_type": "recovery_exhausted"}, headers=headers).json()
     assert activity["total"] >= 1
+    notes = client.get("/notifications", params={"limit": 200}, headers=headers).json()["items"]
+    coverage = [item for item in notes if item["message_type"] == "task_unassigned" and item["recipient_type"] == "host"]
+    assert coverage
+    assert all(item["status"] == "sent" for item in coverage)
+    task_id = coverage[0]["task_id"]
+    assert "outside_working_hours" not in list_tasks(client, headers, prop["id"])[0]["conflict_details"]["brief"]
+    first = client.post("/scheduling/evaluate", json={"task_id": task_id}, headers=headers)
+    second = client.post("/scheduling/evaluate", json={"task_id": task_id}, headers=headers)
+    assert first.status_code == 200, first.text
+    assert second.status_code == 200, second.text
+    assert first.json()["manager_alert"]["manager_notified"] is True
+    assert first.json()["manager_alert"]["email_status"] == "not_configured"
+    again = [item for item in client.get("/notifications", params={"limit": 200}, headers=headers).json()["items"] if item["message_type"] == "task_unassigned"]
+    assert len(again) == len(coverage)
 
 
 def test_started_and_completed_tasks_are_not_reassigned(client):
@@ -121,7 +133,14 @@ def test_started_and_completed_tasks_are_not_reassigned(client):
     assert connected.json()["simulated"] is True
     started = client.post(
         "/dev/telegram/updates",
-        json={"update_id": 3, "message": {"text": "start", "from": {"id": 42}, "chat": {"id": 42}}},
+        json={
+            "update_id": 3,
+            "callback_query": {
+                "data": f"start:{task['assignment']['id']}",
+                "from": {"id": 42},
+                "message": {"chat": {"id": 42}},
+            },
+        },
     )
     assert started.json()["status"] == "applied"
     sync(client, headers, prop["id"], LATER)
@@ -144,7 +163,14 @@ def test_started_and_completed_tasks_are_not_reassigned(client):
     )
     done = client.post(
         "/dev/telegram/updates",
-        json={"update_id": 5, "message": {"text": "complete", "from": {"id": 7}, "chat": {"id": 7}}},
+        json={
+            "update_id": 5,
+            "callback_query": {
+                "data": f"complete:{task['assignment']['id']}",
+                "from": {"id": 7},
+                "message": {"chat": {"id": 7}},
+            },
+        },
     )
     assert done.json()["status"] == "applied"
     sync(client, headers, prop["id"], LATER)
@@ -168,7 +194,7 @@ def test_duplicate_telegram_update_accepts_once(client):
     update = {
         "update_id": 10,
         "callback_query": {
-            "data": f"accept:{task['assignment']['id']}",
+            "data": f"decline:{task['assignment']['id']}",
             "from": {"id": 9},
             "message": {"chat": {"id": 9}},
         },
@@ -182,7 +208,7 @@ def test_duplicate_telegram_update_accepts_once(client):
     assert task["status"] == "confirmed"
     db = client.app.state.session_factory()
     try:
-        events = db.query(AuditEvent).filter(AuditEvent.event_type == "assignment_accepted").all()
+        events = db.query(AuditEvent).filter(AuditEvent.event_type == "assignment_declined").all()
         assert len(events) == 1
     finally:
         db.close()
@@ -243,34 +269,49 @@ def test_ambiguous_intent_does_not_change_the_task(client, monkeypatch):
 
 
 def test_notification_failure_is_retried_without_confirming_the_task(client, monkeypatch):
-    client.app.state.settings.telegram_bot_token = "token"
+    import smtplib
+
+    settings = client.app.state.settings
+    settings.smtp_host = "smtp.gmail.com"
+    settings.smtp_port = 587
+    settings.smtp_username = "bot@example.com"
+    settings.smtp_password = "app-password"
+    settings.email_from = "bot@example.com"
     failed = {"on": True}
 
-    def send(token, chat_id, text, client=None):
-        if failed["on"]:
-            from turnoverops.integrations.telegram_api import TelegramError
+    class FakeSMTP:
+        def __init__(self, host, port, timeout=None):
+            self.host = host
+            self.port = port
 
-            raise TelegramError("temporary outage")
-        return {"ok": True, "result": {"message_id": 15}}
+        def __enter__(self):
+            return self
 
-    monkeypatch.setattr("turnoverops.integrations.telegram_api.send_message", send)
-    headers, prop, ada, _boa = _setup(client)
-    db = client.app.state.session_factory()
-    try:
-        from turnoverops.models import Cleaner
+        def __exit__(self, *_args):
+            return False
 
-        cleaner = db.get(Cleaner, ada["id"])
-        cleaner.telegram_chat_id = "100"
-        cleaner.telegram_status = "connected"
-        db.commit()
-    finally:
-        db.close()
+        def ehlo(self):
+            return (250, b"ok")
+
+        def starttls(self, context=None):
+            return (220, b"ready")
+
+        def login(self, user, password):
+            return (235, b"ok")
+
+        def send_message(self, message):
+            if failed["on"]:
+                raise smtplib.SMTPServerDisconnected("temporary outage")
+            return {}
+
+    monkeypatch.setattr("smtplib.SMTP", FakeSMTP)
+    headers, prop, _ada, _boa = _setup(client)
     sync(client, headers, prop["id"], STAYS)
     task = _gap(client, headers, prop["id"])
-    assert task["status"] == "awaiting_confirmation"
+    assert task["status"] == "confirmed"
     db = client.app.state.session_factory()
     try:
-        notes = db.query(Notification).filter(Notification.channel == "telegram").all()
+        notes = db.query(Notification).filter(Notification.channel == "smtp", Notification.message_type == "assignment_email").all()
         assert notes
         assert all(note.status == "failed" for note in notes)
         for note in notes:
@@ -285,13 +326,13 @@ def test_notification_failure_is_retried_without_confirming_the_task(client, mon
         failed["on"] = False
         retry_notifications(db, client.app.state.settings, now=datetime.now(UTC))
         db.commit()
-        notes = db.query(Notification).filter(Notification.channel == "telegram").all()
+        notes = db.query(Notification).filter(Notification.channel == "smtp", Notification.message_type == "assignment_email").all()
         assert notes
         assert all(note.status == "sent" for note in notes)
-        assert all(note.provider_response["message_id"] == 15 for note in notes)
+        assert all(note.provider_response["status"] == "sent" for note in notes)
     finally:
         db.close()
-    assert _gap(client, headers, prop["id"])["status"] == "awaiting_confirmation"
+    assert _gap(client, headers, prop["id"])["status"] == "confirmed"
 
 
 def test_calendar_failure_does_not_change_confirmation(client, monkeypatch):
@@ -300,8 +341,6 @@ def test_calendar_failure_does_not_change_confirmation(client, monkeypatch):
 
     monkeypatch.setattr("turnoverops.integrations.google_calendar_api.upsert_event", fail)
     headers, prop, _ada, _boa = _setup(client)
-    sync(client, headers, prop["id"], STAYS)
-    task = _gap(client, headers, prop["id"])
     db = client.app.state.session_factory()
     try:
         from turnoverops.models import Host
@@ -318,14 +357,15 @@ def test_calendar_failure_does_not_change_confirmation(client, monkeypatch):
         db.commit()
     finally:
         db.close()
-    response = client.post(f"/assignments/{task['assignment']['id']}/accept", headers=headers)
-    assert response.json()["status"] == "confirmed"
+    sync(client, headers, prop["id"], STAYS)
+    task = _gap(client, headers, prop["id"])
+    assert task["status"] == "confirmed"
     db = client.app.state.session_factory()
     try:
-        mapping = db.query(CalendarEventMapping).one()
+        mapping = db.query(CalendarEventMapping).filter(CalendarEventMapping.task_id == task["id"]).one()
         assert mapping.google_event_id is None
         assert mapping.last_error == "calendar down"
-        assert db.query(AuditEvent).filter(AuditEvent.event_type == "calendar_sync_failed").count() == 1
+        assert db.query(AuditEvent).filter(AuditEvent.event_type == "calendar_sync_failed", AuditEvent.entity_id == task["id"]).count() == 1
         assert db.get(Assignment, task["assignment"]["id"]).state == "accepted"
     finally:
         db.close()

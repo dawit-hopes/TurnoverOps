@@ -1,5 +1,5 @@
-from dataclasses import dataclass
-from datetime import datetime, time, timedelta
+from dataclasses import dataclass, field
+from datetime import date, datetime, time, timedelta
 from zoneinfo import ZoneInfo
 
 from turnoverops.scheduling.windows import as_utc, earliest_start
@@ -17,6 +17,7 @@ class CleanerInput:
     max_jobs_per_day: int | None
     eligible_property_ids: frozenset[str] | None
     preferred_property_ids: frozenset[str]
+    unavailable_dates: frozenset[date] = field(default_factory=frozenset)
 
 
 @dataclass(frozen=True)
@@ -81,6 +82,10 @@ def evaluate_cleaner(cleaner: CleanerInput, window: JobWindow, busy: list[BusyIn
     reasons: list[str] = []
     if not cleaner.active:
         reasons.append("inactive")
+    property_zone = ZoneInfo(window.property_timezone)
+    job_day = as_utc(window.window_start).astimezone(property_zone).date()
+    if job_day in cleaner.unavailable_dates:
+        reasons.append("unavailable")
     eligible = cleaner.eligible_property_ids
     if eligible is not None and window.property_id not in eligible:
         reasons.append("not_eligible")
@@ -104,7 +109,6 @@ def evaluate_cleaner(cleaner: CleanerInput, window: JobWindow, busy: list[BusyIn
             reasons.append("outside_working_hours")
 
     end = start + duration if start is not None else None
-    property_zone = ZoneInfo(window.property_timezone)
     jobs_that_day = 0
     if start is not None and end is not None:
         day = start.astimezone(property_zone).date()

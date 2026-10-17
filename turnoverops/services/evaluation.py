@@ -1,4 +1,5 @@
 from collections import defaultdict
+from datetime import date
 
 from sqlalchemy import select
 from sqlalchemy.orm import Session
@@ -20,6 +21,7 @@ def cleaner_inputs(db: Session, host_id: str) -> list[CleanerInput]:
         restricting = [row.property_id for row in rows if row.restricts]
         eligible = frozenset(restricting) if restricting else None
         preferred = frozenset(row.property_id for row in rows if row.is_preferred)
+        unavailable = frozenset(date.fromisoformat(item) for item in (cleaner.unavailable_dates or []) if item)
         inputs.append(
             CleanerInput(
                 id=cleaner.id,
@@ -32,6 +34,7 @@ def cleaner_inputs(db: Session, host_id: str) -> list[CleanerInput]:
                 max_jobs_per_day=cleaner.max_jobs_per_day,
                 eligible_property_ids=eligible,
                 preferred_property_ids=preferred,
+                unavailable_dates=unavailable,
             )
         )
     return inputs

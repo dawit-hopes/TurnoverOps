@@ -115,10 +115,13 @@ def _select_assignment(db: Session, cleaner: Cleaner, intent: str, assignment_id
             CleaningTask.host_id == cleaner.host_id,
         )
     )
-    if intent in {"ACCEPT_ASSIGNMENT", "DECLINE_ASSIGNMENT"}:
+    if intent == "DECLINE_ASSIGNMENT":
         stmt = stmt.where(
-            Assignment.state == AssignmentState.awaiting_confirmation,
-            CleaningTask.status == TaskStatus.awaiting_confirmation,
+            (
+                (Assignment.state == AssignmentState.awaiting_confirmation)
+                & (CleaningTask.status == TaskStatus.awaiting_confirmation)
+            )
+            | ((Assignment.state == AssignmentState.accepted) & (CleaningTask.status == TaskStatus.confirmed))
         )
     elif intent == "START_CLEANING":
         stmt = stmt.where(Assignment.state == AssignmentState.accepted, CleaningTask.status == TaskStatus.confirmed)

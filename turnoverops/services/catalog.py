@@ -11,13 +11,15 @@ from turnoverops.integrations.ical_feed import validate_public_http_url
 from turnoverops.integrations.snapshots import FeedError
 from turnoverops.models import Cleaner, CleanerProperty, Host, Property
 from turnoverops.schemas import CleanerIn, CleanerUpdate, PropertyIn, PropertyUpdate
+from turnoverops.services.host_copy import for_host
+from turnoverops.services.host_policy import ensure_settings
 
 
 def require_zone(name: str) -> str:
     try:
         ZoneInfo(name)
     except ZoneInfoNotFoundError as exc:
-        raise AppError(422, "invalid_timezone", "Unknown timezone") from exc
+        raise AppError(422, "invalid_timezone", "Choose a known time zone.") from exc
     return name
 
 
@@ -26,20 +28,30 @@ def _check_feed(feed_kind: str, ical_url: str | None, demo_payload: dict | None)
         try:
             validate_public_http_url(ical_url)
         except FeedError as exc:
-            raise AppError(422, "invalid_feed_url", str(exc)) from exc
+            raise AppError(422, "invalid_feed_url", for_host(str(exc))) from exc
     if demo_payload is not None:
         try:
             parse_demo_feed(demo_payload)
         except FeedError as exc:
-            raise AppError(422, "invalid_feed", str(exc)) from exc
+            raise AppError(422, "invalid_feed", "The sample calendar could not be read.") from exc
     if feed_kind == FeedKind.ical and not ical_url:
-        raise AppError(422, "feed_missing", "An iCal feed needs a URL")
+        raise AppError(422, "feed_missing", "Add a calendar address.")
 
 
 def create_property(db: Session, host: Host, body: PropertyIn) -> Property:
-    require_zone(body.timezone)
-    _check_feed(body.feed_kind, body.ical_url, body.demo_payload)
-    prop = Property(host_id=host.id, **body.model_dump())
+    settings = ensure_settings(db, host.id)
+    data = body.model_dump()
+    if data["timezone"] is None:
+        data["timezone"] = settings.timezone
+    if data["default_checkout_time"] is None:
+        data["default_checkout_time"] = settings.default_checkout_time
+    if data["default_checkin_time"] is None:
+        data["default_checkin_time"] = settings.default_checkin_time
+    if data["cleaning_duration_minutes"] is None:
+        data["cleaning_duration_minutes"] = settings.default_cleaning_duration_minutes
+    require_zone(data["timezone"])
+    _check_feed(data["feed_kind"], data["ical_url"], data["demo_payload"])
+    prop = Property(host_id=host.id, **data)
     db.add(prop)
     db.flush()
     return prop
@@ -103,12 +115,14 @@ def create_cleaner(db: Session, host: Host, body: CleanerIn) -> Cleaner:
     cleaner = Cleaner(
         host_id=host.id,
         name=body.name,
+        email=body.email,
         telegram_username=body.telegram_username,
         timezone=body.timezone,
         working_days=body.working_days,
         work_start=body.work_start,
         work_end=body.work_end,
         max_jobs_per_day=body.max_jobs_per_day,
+        unavailable_dates=body.unavailable_dates,
     )
     db.add(cleaner)
     db.flush()

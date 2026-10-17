@@ -24,6 +24,7 @@ def parse_demo_feed(payload: dict, *, source: str = "demo") -> list[ReservationS
         if end_at <= start_at:
             raise FeedError(f"Reservation {uid} must end after it starts")
         summary = item.get("summary")
+        guest_name = item.get("guest_name")
         snapshots.append(
             ReservationSnapshot(
                 external_uid=uid,
@@ -31,6 +32,7 @@ def parse_demo_feed(payload: dict, *, source: str = "demo") -> list[ReservationS
                 end_at=end_at,
                 cancelled=bool(item.get("cancelled", False)),
                 summary=str(summary)[:300] if summary else None,
+                guest_name=str(guest_name)[:200] if guest_name else None,
                 source=source,
             )
         )

@@ -15,6 +15,7 @@ class ReservationSnapshot:
     cancelled: bool
     summary: str | None
     source: str
+    guest_name: str | None = None
 
     def digest(self) -> str:
         raw = "|".join(
@@ -24,6 +25,7 @@ class ReservationSnapshot:
                 self.end_at.isoformat(),
                 str(self.cancelled),
                 self.summary or "",
+                self.guest_name or "",
                 self.source,
             ]
         )

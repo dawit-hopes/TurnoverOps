@@ -1,8 +1,11 @@
-from datetime import UTC, datetime, time
+import re
+from datetime import UTC, date, datetime, time
 from typing import Generic, TypeVar
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
+
+_EMAIL = re.compile(r"^[^@\s]+@[^@\s]+\.[^@\s]+$")
 
 T = TypeVar("T")
 
@@ -38,6 +41,27 @@ def _days(value: list[int]) -> list[int]:
     return value
 
 
+def _email(value: str | None) -> str | None:
+    if value is None:
+        return None
+    cleaned = value.strip().lower()
+    if not cleaned or len(cleaned) > 320 or _EMAIL.match(cleaned) is None:
+        raise ValueError("Enter a valid email address")
+    return cleaned
+
+
+def _iso_dates(value: list[str]) -> list[str]:
+    parsed: list[str] = []
+    for item in value:
+        try:
+            parsed.append(date.fromisoformat(item).isoformat())
+        except ValueError as exc:
+            raise ValueError("unavailable_dates must be YYYY-MM-DD") from exc
+    if len(set(parsed)) != len(parsed):
+        raise ValueError("unavailable_dates must be unique")
+    return parsed
+
+
 class GoogleAuthIn(APIModel):
     id_token: str = Field(min_length=1)
 
@@ -62,21 +86,67 @@ class OnboardingOut(APIModel):
     completed: bool
 
 
+class SettingsOut(APIModel):
+    timezone: str
+    default_checkout_time: time
+    default_checkin_time: time
+    default_cleaning_duration_minutes: int
+    auto_reassignment: bool
+    trusted_cleaner_policy: bool
+    notify_cleaners: bool
+    notify_host_on_escalation: bool
+    sync_interval_minutes: int
+    configuration_confirmed_at: datetime | None = None
+    plan_approved_at: datetime | None = None
+    daily_planning_enabled: bool = False
+    dispatch_mode: str = "review_only"
+    daily_plan_time: time = time(6, 0)
+    allow_fast_path: bool = True
+
+
+class SettingsUpdate(APIModel):
+    timezone: str
+    default_checkout_time: time
+    default_checkin_time: time
+    default_cleaning_duration_minutes: int = Field(ge=15, le=24 * 60)
+    auto_reassignment: bool
+    trusted_cleaner_policy: bool
+    notify_cleaners: bool
+    notify_host_on_escalation: bool
+    sync_interval_minutes: int = Field(ge=1, le=24 * 60)
+    dispatch_mode: str | None = None
+    daily_plan_time: time | None = None
+    daily_planning_enabled: bool | None = None
+    allow_fast_path: bool | None = None
+
+    @field_validator("timezone")
+    @classmethod
+    def timezone_exists(cls, value: str) -> str:
+        return _zone(value)
+
+    @field_validator("dispatch_mode")
+    @classmethod
+    def known_dispatch_mode(cls, value: str | None) -> str | None:
+        if value is not None and value not in {"review_only", "automatic"}:
+            raise ValueError("dispatch_mode must be review_only or automatic")
+        return value
+
+
 class PropertyIn(APIModel):
     name: str = Field(min_length=1, max_length=200)
     address: str | None = None
-    timezone: str = "UTC"
-    default_checkout_time: time = time(10, 0)
-    default_checkin_time: time = time(15, 0)
-    cleaning_duration_minutes: int = Field(default=120, ge=15, le=24 * 60)
+    timezone: str | None = None
+    default_checkout_time: time | None = None
+    default_checkin_time: time | None = None
+    cleaning_duration_minutes: int | None = Field(default=None, ge=15, le=24 * 60)
     feed_kind: str = "none"
     ical_url: str | None = None
     demo_payload: dict | None = None
 
     @field_validator("timezone")
     @classmethod
-    def timezone_exists(cls, value: str) -> str:
-        return _zone(value)
+    def timezone_exists(cls, value: str | None) -> str | None:
+        return None if value is None else _zone(value)
 
     @field_validator("feed_kind")
     @classmethod
@@ -135,6 +205,7 @@ class DemoReservationIn(APIModel):
     end: datetime
     cancelled: bool = False
     summary: str | None = None
+    guest_name: str | None = Field(default=None, max_length=200)
 
     @field_validator("start", "end")
     @classmethod
@@ -161,6 +232,7 @@ class SyncOut(APIModel):
 
 class CleanerIn(APIModel):
     name: str = Field(min_length=1, max_length=200)
+    email: str = Field(min_length=3, max_length=320)
     telegram_username: str | None = None
     timezone: str = "UTC"
     working_days: list[int] = Field(default_factory=lambda: [0, 1, 2, 3, 4])
@@ -169,6 +241,15 @@ class CleanerIn(APIModel):
     max_jobs_per_day: int | None = Field(default=None, ge=1, le=20)
     property_ids: list[str] = Field(default_factory=list)
     preferred_property_ids: list[str] = Field(default_factory=list)
+    unavailable_dates: list[str] = Field(default_factory=list)
+
+    @field_validator("email")
+    @classmethod
+    def email_valid(cls, value: str) -> str:
+        cleaned = _email(value)
+        if cleaned is None:
+            raise ValueError("Enter a valid email address")
+        return cleaned
 
     @field_validator("timezone")
     @classmethod
@@ -180,6 +261,11 @@ class CleanerIn(APIModel):
     def days(cls, value: list[int]) -> list[int]:
         return _days(value)
 
+    @field_validator("unavailable_dates")
+    @classmethod
+    def dates(cls, value: list[str]) -> list[str]:
+        return _iso_dates(value)
+
     @model_validator(mode="after")
     def hours(self):
         if self.work_end <= self.work_start:
@@ -189,6 +275,7 @@ class CleanerIn(APIModel):
 
 class CleanerUpdate(APIModel):
     name: str | None = Field(default=None, min_length=1, max_length=200)
+    email: str | None = None
     telegram_username: str | None = None
     timezone: str | None = None
     working_days: list[int] | None = None
@@ -197,6 +284,12 @@ class CleanerUpdate(APIModel):
     max_jobs_per_day: int | None = Field(default=None, ge=1, le=20)
     property_ids: list[str] | None = None
     preferred_property_ids: list[str] | None = None
+    unavailable_dates: list[str] | None = None
+
+    @field_validator("email")
+    @classmethod
+    def email_valid(cls, value: str | None) -> str | None:
+        return None if value is None else _email(value)
 
     @field_validator("timezone")
     @classmethod
@@ -208,10 +301,16 @@ class CleanerUpdate(APIModel):
     def days(cls, value: list[int] | None) -> list[int] | None:
         return None if value is None else _days(value)
 
+    @field_validator("unavailable_dates")
+    @classmethod
+    def dates(cls, value: list[str] | None) -> list[str] | None:
+        return None if value is None else _iso_dates(value)
+
 
 class CleanerOut(APIModel):
     id: str
     name: str
+    email: str | None
     telegram_username: str | None
     telegram_user_id: str | None
     timezone: str
@@ -221,6 +320,7 @@ class CleanerOut(APIModel):
     max_jobs_per_day: int | None
     active: bool
     telegram_status: str
+    unavailable_dates: list[str]
     property_ids: list[str]
     preferred_property_ids: list[str]
     created_at: datetime
@@ -240,6 +340,7 @@ class ReservationOut(APIModel):
     end_at: datetime
     source: str
     summary: str | None
+    guest_name: str | None
     cancelled: bool
     last_seen_at: datetime
     created_at: datetime
@@ -263,14 +364,29 @@ class TaskOut(APIModel):
     id: str
     property_id: str
     turnover_key: str
+    checkout_reservation_id: str | None
+    checkin_reservation_id: str | None
     window_start: datetime
     window_end: datetime
     duration_minutes: int
+    feed_window_start: datetime
+    feed_window_end: datetime
+    feed_duration_minutes: int
+    window_overridden: bool
     status: str
     priority: str
     assigned_cleaner_id: str | None
     conflict_details: dict | None
+    manager_notified: bool = False
+    email_status: str | None = None
+    assignment_email_status: str | None = None
+    assignment_email_via: str | None = None
+    assignment_email_error: str | None = None
+    rejection_cleaner_name: str | None = None
+    replacement_found: bool | None = None
+    replacement_cleaner_name: str | None = None
     started_at: datetime | None
+    host_resolved_at: datetime | None
     assignment: AssignmentOut | None = None
     created_at: datetime
     updated_at: datetime
@@ -278,6 +394,9 @@ class TaskOut(APIModel):
 
 class TaskPatch(APIModel):
     priority: str | None = None
+    window_start: datetime | None = None
+    window_end: datetime | None = None
+    duration_minutes: int | None = Field(default=None, ge=15, le=24 * 60)
 
     @field_validator("priority")
     @classmethod
@@ -285,6 +404,29 @@ class TaskPatch(APIModel):
         if value is not None and value not in {"normal", "high"}:
             raise ValueError("priority must be normal or high")
         return value
+
+    @field_validator("window_start", "window_end")
+    @classmethod
+    def timezone_required(cls, value: datetime | None) -> datetime | None:
+        return None if value is None else _aware(value)
+
+    @model_validator(mode="after")
+    def window_fields(self):
+        present = (self.window_start is not None, self.window_end is not None, self.duration_minutes is not None)
+        if any(present) and not all(present):
+            raise ValueError("window_start, window_end, and duration_minutes must be set together")
+        if self.window_start is not None and self.window_end is not None and self.window_end <= self.window_start:
+            raise ValueError("window_end must be after window_start")
+        return self
+
+
+class BookingShiftIn(APIModel):
+    days: int = Field(default=1, ge=-30, le=30)
+
+
+class ManagerAlertOut(APIModel):
+    manager_notified: bool = False
+    email_status: str | None = None
 
 
 class CandidateOut(APIModel):
@@ -303,6 +445,7 @@ class CandidateOut(APIModel):
 class DecisionOut(APIModel):
     selected_cleaner_id: str | None
     candidates: list[CandidateOut]
+    manager_alert: ManagerAlertOut | None = None
 
 
 class PreviewIn(APIModel):
@@ -359,6 +502,7 @@ class NotificationOut(APIModel):
     retry_count: int
     next_retry_at: datetime | None
     provider_response: dict | None
+    task_id: str | None
     created_at: datetime
 
 
@@ -393,3 +537,54 @@ class IntegrationOut(APIModel):
     telegram: dict
     gemini: dict
     google_calendar: dict
+
+
+class PlanningRunOut(APIModel):
+    id: str
+    host_id: str
+    trigger: str
+    status: str
+    stage: str | None
+    operational_date: str
+    timezone: str
+    started_at: datetime
+    finished_at: datetime | None
+    error: str | None
+    tasks_considered: int
+    assignments_created: int
+    assignments_preserved: int
+    assignments_changed: int
+    unassigned_count: int
+    conflicts: list
+    warnings: list
+    reasoning_summary: str | None
+    requires_human_review: bool
+    llm_skipped_reason: str | None
+    llm_provider: str | None
+    llm_model: str | None
+    prompt_tokens: int | None
+    output_tokens: int | None
+    llm_calls: int
+    repair_count: int
+    validation_outcome: str | None
+    duration_ms: int | None
+    estimated_cost: float | None
+    scope_fingerprint: str | None
+    result: dict | None
+    details: dict | None
+
+
+class PlanningCurrentOut(APIModel):
+    run: PlanningRunOut | None
+    last_successful: PlanningRunOut | None
+
+
+class ApprovePlanIn(APIModel):
+    dispatch_mode: str
+
+    @field_validator("dispatch_mode")
+    @classmethod
+    def known_dispatch_mode(cls, value: str) -> str:
+        if value not in {"review_only", "automatic"}:
+            raise ValueError("dispatch_mode must be review_only or automatic")
+        return value

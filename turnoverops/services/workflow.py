@@ -12,11 +12,20 @@ from turnoverops.domain import (
     AssignmentState,
     TaskStatus,
 )
-from turnoverops.models import Assignment, Cleaner, CleaningTask, Property
+from turnoverops.models import Assignment, Cleaner, CleaningTask, Host, Property
 from turnoverops.scheduling.engine import Decision, Evaluation, describe
 from turnoverops.services.audit import audit
 from turnoverops.services.evaluation import evaluate_window, task_window
-from turnoverops.services.notifications import notify_cleaner, notify_host
+from turnoverops.services.host_copy import plain_brief
+from turnoverops.services.host_policy import HostPolicy, load_policy
+from turnoverops.services.notifications import notify_host
+from turnoverops.services.planning.alerts import alert_unassigned
+
+
+def _revoke_links(db: Session, assignment_id: str, now: datetime) -> None:
+    from turnoverops.services.cleaner_mail import revoke_rejection_tokens
+
+    revoke_rejection_tokens(db, assignment_id, now)
 
 
 def bump(db: Session, task: CleaningTask) -> None:
@@ -27,7 +36,7 @@ def bump(db: Session, task: CleaningTask) -> None:
         .values(assignment_version=expected + 1)
     )
     if result.rowcount != 1:
-        raise AppError(409, "conflict", "The task was updated by another worker")
+        raise AppError(409, "conflict", "This cleaning changed while you were working. Refresh and try again.")
     task.assignment_version = expected + 1
 
 
@@ -77,6 +86,7 @@ def _attention(
     task: CleaningTask,
     prop: Property,
     settings: Settings,
+    policy: HostPolicy,
     now: datetime,
     summary: str,
     *,
@@ -87,9 +97,11 @@ def _attention(
     signature = _signature(summary, task)
     already = task.status == TaskStatus.at_risk and (task.conflict_details or {}).get("signature") == signature
     task.status = TaskStatus.at_risk
+    task.host_resolved_at = None
     task.last_evaluated_at = now
     task.conflict_details = {
         "summary": summary,
+        "brief": plain_brief(summary),
         "signature": signature,
         "rejected": [
             {"cleaner_id": item.cleaner_id, "reasons": list(item.reasons)} for item in (decision.rejected if decision else ())
@@ -111,7 +123,23 @@ def _attention(
         reason=summary,
         details={"signature": signature},
     )
-    notify_host(db, task.host_id, event_type, f"{prop.name}: {summary}")
+    if not policy.notify_host_on_escalation:
+        return
+    no_coverage = clear_assignee and decision is not None and not decision.ranked_feasible
+    host = db.get(Host, task.host_id) if no_coverage else None
+    if host is not None:
+        cleaner_ids = [item.cleaner_id for item in (*decision.ranked_feasible, *decision.rejected)] if decision else []
+        alert_unassigned(
+            db,
+            host,
+            task,
+            prop,
+            settings,
+            reason=summary,
+            cleaner_ids=cleaner_ids,
+        )
+        return
+    notify_host(db, task.host_id, event_type, f"{prop.name}: {summary}", task_id=task.id)
 
 
 def _commit_proposal(
@@ -122,6 +150,7 @@ def _commit_proposal(
     decision: Decision,
     now: datetime,
     settings: Settings,
+    policy: HostPolicy,
     *,
     attempt_number: int,
     actor: str,
@@ -130,7 +159,7 @@ def _commit_proposal(
         host_id=task.host_id,
         task_id=task.id,
         cleaner_id=chosen.cleaner_id,
-        state=AssignmentState.awaiting_confirmation,
+        state=AssignmentState.accepted,
         reason=describe(chosen),
         explanation={
             "jobs_that_day": chosen.jobs_that_day,
@@ -146,12 +175,13 @@ def _commit_proposal(
         scheduled_end=chosen.scheduled_end,
         proposed_at=now,
         deadline_at=now + timedelta(minutes=settings.confirmation_timeout_minutes),
+        responded_at=now,
     )
     db.add(assignment)
     db.flush()
     task.assigned_cleaner_id = chosen.cleaner_id
     task.current_assignment_id = assignment.id
-    task.status = TaskStatus.awaiting_confirmation
+    task.status = TaskStatus.confirmed
     task.last_evaluated_at = now
     task.conflict_details = {
         "summary": describe(chosen),
@@ -166,24 +196,31 @@ def _commit_proposal(
         entity_type="assignment",
         entity_id=assignment.id,
         reason=describe(chosen),
-        details={"cleaner_id": chosen.cleaner_id, "actor": actor, "attempt": attempt_number},
+        details={"cleaner_id": chosen.cleaner_id, "actor": actor, "attempt": attempt_number, "task_id": task.id},
     )
-    cleaner = db.get(Cleaner, chosen.cleaner_id)
-    if cleaner is not None:
-        notify_cleaner(
-            db,
-            cleaner,
-            "assignment_proposed",
-            f"{prop.name} needs cleaning from {chosen.scheduled_start.isoformat()} to {chosen.scheduled_end.isoformat()}. Reply accept or decline.",
-            settings,
-            now=now,
-        )
+    if policy.notify_cleaners:
+        from turnoverops.services.cleaner_mail import send_assignment_email
+
+        send_assignment_email(db, assignment, settings, now)
+    audit(
+        db,
+        host_id=task.host_id,
+        event_type="assignment_accepted",
+        entity_type="assignment",
+        entity_id=assignment.id,
+        reason="Assignment is confirmed until the cleaner declines",
+        details={"actor": "system", "cleaner_id": chosen.cleaner_id, "task_id": task.id},
+    )
     notify_host(
         db,
         task.host_id,
-        "assignment_proposed",
-        f"Proposed {chosen.cleaner_name} for {prop.name}. Waiting for confirmation.",
+        "assignment_accepted",
+        f"{prop.name} cleaning is confirmed for {chosen.cleaner_name}.",
+        task_id=task.id,
     )
+    from turnoverops.services.calendar_sync import publish_task
+
+    publish_task(db, task, prop, settings)
     return assignment
 
 
@@ -194,6 +231,7 @@ def _propose(
     decision: Decision,
     now: datetime,
     settings: Settings,
+    policy: HostPolicy,
     *,
     ignore_cap: bool,
     cleaner_id: str | None,
@@ -207,6 +245,7 @@ def _propose(
             task,
             prop,
             settings,
+            policy,
             now,
             "Assignment retry limit reached",
             event_type="recovery_exhausted",
@@ -220,7 +259,7 @@ def _propose(
         if chosen is None:
             rejected = _find(decision, cleaner_id)
             reasons = list(rejected.reasons) if rejected else ["not_eligible"]
-            raise AppError(409, "infeasible", "Cleaner cannot take this task", details=reasons)
+            raise AppError(409, "infeasible", "This cleaner cannot take this cleaning in the available time.", details=reasons)
     else:
         chosen = next((item for item in decision.ranked_feasible if item.cleaner_id not in excluded), None)
         if chosen is None:
@@ -230,6 +269,7 @@ def _propose(
                 task,
                 prop,
                 settings,
+                policy,
                 now,
                 summary,
                 event_type="recovery_exhausted",
@@ -245,9 +285,42 @@ def _propose(
         decision,
         now,
         settings,
+        policy,
         attempt_number=len(failures) + 1,
         actor=actor,
     )
+
+
+def _park_for_host(
+    db: Session,
+    task: CleaningTask,
+    prop: Property,
+    policy: HostPolicy,
+    now: datetime,
+    summary: str,
+) -> None:
+    task.status = TaskStatus.at_risk
+    task.host_resolved_at = None
+    task.last_evaluated_at = now
+    task.assigned_cleaner_id = None
+    task.current_assignment_id = None
+    task.conflict_details = {
+        "summary": summary,
+        "brief": plain_brief(summary),
+        "signature": _signature(summary, task),
+        "rejected": [],
+    }
+    audit(
+        db,
+        host_id=task.host_id,
+        event_type="host_intervention_required",
+        entity_type="cleaning_task",
+        entity_id=task.id,
+        reason=summary,
+        details={"auto_reassignment": False},
+    )
+    if policy.notify_host_on_escalation:
+        notify_host(db, task.host_id, "host_intervention_required", f"{prop.name}: {summary}", task_id=task.id)
 
 
 def reconcile_task(
@@ -260,6 +333,7 @@ def reconcile_task(
     ignore_cap: bool = False,
     cleaner_id: str | None = None,
     actor: str = "system",
+    policy: HostPolicy,
 ) -> None:
     if task.status in {TaskStatus.completed, TaskStatus.blocked}:
         return
@@ -275,6 +349,7 @@ def reconcile_task(
                 task,
                 prop,
                 settings,
+                policy,
                 now,
                 "Cleaning is in progress and can no longer be finished in the updated window",
                 event_type="host_intervention_required",
@@ -292,18 +367,36 @@ def reconcile_task(
         bump(db, task)
         current.state = AssignmentState.cancelled
         current.responded_at = now
+        _revoke_links(db, current.id, now)
         task.assigned_cleaner_id = None
         task.current_assignment_id = None
+        lost = describe(evaluation) if evaluation else "The assigned cleaner is no longer available"
         audit(
             db,
             host_id=task.host_id,
             event_type="conflict_detected",
             entity_type="cleaning_task",
             entity_id=task.id,
-            reason=describe(evaluation) if evaluation else "The assigned cleaner is no longer available",
-            details={"cleaner_id": current.cleaner_id},
+            reason=lost,
+            details={"cleaner_id": current.cleaner_id, "task_id": task.id},
         )
-        _propose(db, task, prop, decision, now, settings, ignore_cap=ignore_cap, cleaner_id=None, extra_excluded=set(), actor=actor)
+        task.host_resolved_at = None
+        if not policy.auto_reassignment and actor != "host" and cleaner_id is None:
+            _park_for_host(db, task, prop, policy, now, lost)
+            return
+        _propose(
+            db,
+            task,
+            prop,
+            decision,
+            now,
+            settings,
+            policy,
+            ignore_cap=ignore_cap,
+            cleaner_id=None,
+            extra_excluded=set(),
+            actor=actor,
+        )
         return
     bump(db, task)
     _propose(
@@ -313,6 +406,7 @@ def reconcile_task(
         decision,
         now,
         settings,
+        policy,
         ignore_cap=ignore_cap,
         cleaner_id=cleaner_id,
         extra_excluded=set(),
@@ -321,6 +415,7 @@ def reconcile_task(
 
 
 def reconcile_open(db: Session, prop: Property, now: datetime, settings: Settings) -> list[CleaningTask]:
+    policy = load_policy(db, prop.host_id)
     tasks = db.scalars(
         select(CleaningTask).where(
             CleaningTask.property_id == prop.id,
@@ -329,7 +424,7 @@ def reconcile_open(db: Session, prop: Property, now: datetime, settings: Setting
     ).all()
     for task in tasks:
         try:
-            reconcile_task(db, task, prop, now, settings)
+            reconcile_task(db, task, prop, now, settings, policy=policy)
         except AppError as exc:
             if exc.code != "conflict":
                 raise
@@ -356,9 +451,9 @@ def accept_assignment(db: Session, assignment: Assignment, now: datetime, settin
         entity_type="assignment",
         entity_id=assignment.id,
         reason="Cleaner accepted the assignment" if actor == "cleaner" else "Assignment accepted",
-        details={"actor": actor, "cleaner_id": assignment.cleaner_id},
+        details={"actor": actor, "cleaner_id": assignment.cleaner_id, "task_id": task.id},
     )
-    notify_host(db, task.host_id, "assignment_accepted", f"{prop.name} cleaning is confirmed.")
+    notify_host(db, task.host_id, "assignment_accepted", f"{prop.name} cleaning is confirmed.", task_id=task.id)
     from turnoverops.services.calendar_sync import publish_task
 
     publish_task(db, task, prop, settings)
@@ -374,21 +469,29 @@ def close_assignment(
     state: AssignmentState,
     actor: str,
     reason: str,
+    policy: HostPolicy | None = None,
 ) -> CleaningTask:
     task = db.get(CleaningTask, assignment.task_id)
     prop = db.get(Property, task.property_id) if task else None
     if task is None or prop is None:
         raise AppError(404, "not_found", "Not found")
+    host_policy = policy or load_policy(db, task.host_id)
     if task.started_at is not None or task.status in LOCKED_TASK_STATUSES:
-        raise AppError(409, "task_locked", "This task can no longer be reassigned automatically")
-    if assignment.state != AssignmentState.awaiting_confirmation or task.current_assignment_id != assignment.id:
-        raise AppError(409, "invalid_state", "This assignment is not awaiting confirmation")
+        raise AppError(409, "task_locked", "This cleaning can no longer be reassigned automatically.")
+    if task.current_assignment_id != assignment.id:
+        raise AppError(409, "invalid_state", "This assignment is no longer current")
+    waiting = assignment.state == AssignmentState.awaiting_confirmation and task.status == TaskStatus.awaiting_confirmation
+    accepted = assignment.state == AssignmentState.accepted and task.status == TaskStatus.confirmed and task.started_at is None
+    if not waiting and not accepted:
+        raise AppError(409, "invalid_state", "This assignment can no longer be declined")
     bump(db, task)
     assignment.state = state
     assignment.responded_at = now
+    _revoke_links(db, assignment.id, now)
     task.assigned_cleaner_id = None
     task.current_assignment_id = None
     task.status = TaskStatus.unassigned
+    task.host_resolved_at = None
     event_type = "assignment_declined" if state == AssignmentState.declined else "assignment_expired"
     audit(
         db,
@@ -397,10 +500,25 @@ def close_assignment(
         entity_type="assignment",
         entity_id=assignment.id,
         reason=reason,
-        details={"actor": actor, "cleaner_id": assignment.cleaner_id},
+        details={"actor": actor, "cleaner_id": assignment.cleaner_id, "task_id": task.id},
     )
+    if not host_policy.auto_reassignment:
+        _park_for_host(db, task, prop, host_policy, now, reason)
+        return task
     decision = evaluate_window(db, task.host_id, task_window(task, prop.timezone), exclude_task_id=task.id)
-    _propose(db, task, prop, decision, now, settings, ignore_cap=False, cleaner_id=None, extra_excluded=set(), actor="system")
+    _propose(
+        db,
+        task,
+        prop,
+        decision,
+        now,
+        settings,
+        host_policy,
+        ignore_cap=False,
+        cleaner_id=None,
+        extra_excluded=set(),
+        actor="system",
+    )
     return task
 
 
@@ -412,9 +530,11 @@ def reassign_task(
     settings: Settings,
     *,
     cleaner_id: str | None,
+    policy: HostPolicy | None = None,
 ) -> CleaningTask:
+    host_policy = policy or load_policy(db, task.host_id)
     if task.started_at is not None or task.status in LOCKED_TASK_STATUSES:
-        raise AppError(409, "task_locked", "This task can no longer be reassigned automatically")
+        raise AppError(409, "task_locked", "This cleaning can no longer be reassigned automatically.")
     decision = evaluate_window(db, task.host_id, task_window(task, prop.timezone), exclude_task_id=task.id)
     current = current_assignment(db, task)
     extra_excluded: set[str] = set()
@@ -425,13 +545,14 @@ def reassign_task(
         if chosen is None:
             rejected = _find(decision, cleaner_id)
             reasons = list(rejected.reasons) if rejected else ["not_eligible"]
-            raise AppError(409, "infeasible", "Cleaner cannot take this task", details=reasons)
+            raise AppError(409, "infeasible", "This cleaner cannot take this cleaning in the available time.", details=reasons)
     elif not any(item.cleaner_id not in extra_excluded for item in decision.ranked_feasible):
         raise AppError(409, "infeasible", "No other feasible cleaner is available")
     bump(db, task)
     if current is not None and current.state in LIVE_ASSIGNMENT_STATES:
         current.state = AssignmentState.cancelled
         current.responded_at = now
+        _revoke_links(db, current.id, now)
         audit(
             db,
             host_id=task.host_id,
@@ -439,7 +560,7 @@ def reassign_task(
             entity_type="assignment",
             entity_id=current.id,
             reason="Host reassigned the task",
-            details={"actor": "host"},
+            details={"actor": "host", "task_id": task.id},
         )
     task.assigned_cleaner_id = None
     task.current_assignment_id = None
@@ -450,6 +571,7 @@ def reassign_task(
         decision,
         now,
         settings,
+        host_policy,
         ignore_cap=True,
         cleaner_id=cleaner_id,
         extra_excluded=extra_excluded,
@@ -460,8 +582,8 @@ def reassign_task(
 
 def retry_task(db: Session, task: CleaningTask, prop: Property, now: datetime, settings: Settings) -> CleaningTask:
     if task.started_at is not None or task.status in LOCKED_TASK_STATUSES:
-        raise AppError(409, "task_locked", "This task can no longer be reassigned automatically")
-    reconcile_task(db, task, prop, now, settings, ignore_cap=True, actor="host")
+        raise AppError(409, "task_locked", "This cleaning can no longer be reassigned automatically.")
+    reconcile_task(db, task, prop, now, settings, ignore_cap=True, actor="host", policy=load_policy(db, task.host_id))
     return task
 
 
@@ -499,7 +621,7 @@ def complete_cleaning(db: Session, task: CleaningTask, prop: Property, now: date
         reason="Cleaning completed",
         details={"actor": actor},
     )
-    notify_host(db, task.host_id, "cleaning_completed", f"{prop.name} cleaning is marked complete.")
+    notify_host(db, task.host_id, "cleaning_completed", f"{prop.name} cleaning is marked complete.", task_id=task.id)
     from turnoverops.services.calendar_sync import publish_task
 
     publish_task(db, task, prop, settings)
@@ -518,7 +640,7 @@ def report_delay(db: Session, task: CleaningTask, prop: Property, *, actor: str)
         reason="Cleaner reported a delay",
         details={"actor": actor},
     )
-    notify_host(db, task.host_id, "delay_reported", f"{prop.name}: the cleaner reported a delay.")
+    notify_host(db, task.host_id, "delay_reported", f"{prop.name}: the cleaner reported a delay.", task_id=task.id)
 
 
 def report_unavailability(
@@ -529,7 +651,9 @@ def report_unavailability(
     settings: Settings,
     *,
     actor: str,
+    policy: HostPolicy | None = None,
 ) -> None:
+    host_policy = policy or load_policy(db, task.host_id)
     if task.status == TaskStatus.completed:
         raise AppError(409, "invalid_state", "Completed work cannot be changed")
     if task.started_at is not None or task.status == TaskStatus.in_progress:
@@ -539,6 +663,7 @@ def report_unavailability(
             task,
             prop,
             settings,
+            host_policy,
             now,
             "Cleaner reported they cannot finish work already in progress",
             event_type="host_intervention_required",
@@ -556,36 +681,99 @@ def report_unavailability(
         state=AssignmentState.declined,
         actor=actor,
         reason="Cleaner reported they are unavailable",
+        policy=host_policy,
     )
 
 
-def expire_due_assignments(db: Session, settings: Settings, now: datetime) -> int:
-    rows = db.scalars(
-        select(Assignment).where(
-            Assignment.state == AssignmentState.awaiting_confirmation,
-            Assignment.deadline_at <= now,
+def mark_cleaner_unavailable(db: Session, task: CleaningTask, prop: Property, now: datetime, settings: Settings) -> CleaningTask:
+    if task.started_at is not None or task.status in LOCKED_TASK_STATUSES:
+        raise AppError(409, "task_locked", "This cleaning can no longer be reassigned automatically.")
+    assignment = current_assignment(db, task)
+    if assignment is None:
+        raise AppError(409, "invalid_state", "This task has no current assignment")
+    cleaner = db.get(Cleaner, assignment.cleaner_id)
+    if cleaner is None:
+        raise AppError(404, "not_found", "Not found")
+    from zoneinfo import ZoneInfo
+
+    day = task.window_start.astimezone(ZoneInfo(prop.timezone)).date().isoformat()
+    dates = [item for item in (cleaner.unavailable_dates or []) if item != day]
+    dates.append(day)
+    cleaner.unavailable_dates = dates
+    audit(
+        db,
+        host_id=task.host_id,
+        event_type="cleaner_unavailable",
+        entity_type="cleaner",
+        entity_id=cleaner.id,
+        reason=f"{cleaner.name} is unavailable on {day}",
+        details={"date": day, "task_id": task.id},
+    )
+    policy = load_policy(db, task.host_id)
+    report_unavailability(db, task, prop, now, settings, actor="host", policy=policy)
+    others = db.scalars(
+        select(CleaningTask).where(
+            CleaningTask.host_id == task.host_id,
+            CleaningTask.id != task.id,
+            CleaningTask.assigned_cleaner_id == cleaner.id,
+            CleaningTask.status.notin_((TaskStatus.completed, TaskStatus.blocked, TaskStatus.in_progress)),
         )
     ).all()
-    expired = 0
-    for assignment in rows:
-        task = db.get(CleaningTask, assignment.task_id)
-        if task is None or task.current_assignment_id != assignment.id:
+    for other in others:
+        other_prop = db.get(Property, other.property_id)
+        if other_prop is None or other.started_at is not None:
             continue
-        if task.status != TaskStatus.awaiting_confirmation:
+        other_day = other.window_start.astimezone(ZoneInfo(other_prop.timezone)).date().isoformat()
+        if other_day != day:
             continue
         try:
-            close_assignment(
-                db,
-                assignment,
-                now,
-                settings,
-                state=AssignmentState.expired,
-                actor="system",
-                reason="Confirmation deadline expired",
-            )
+            reconcile_task(db, other, other_prop, now, settings, policy=policy)
         except AppError as exc:
             if exc.code != "conflict":
                 raise
+    return task
+
+
+def resolve_issue(db: Session, task: CleaningTask, now: datetime) -> CleaningTask:
+    task.host_resolved_at = now
+    audit(
+        db,
+        host_id=task.host_id,
+        event_type="issue_resolved",
+        entity_type="cleaning_task",
+        entity_id=task.id,
+        reason="Host marked the issue resolved",
+    )
+    return task
+
+
+def confirm_waiting_assignments(db: Session, now: datetime, host_id: str | None = None) -> int:
+    stmt = select(Assignment).where(Assignment.state == AssignmentState.awaiting_confirmation)
+    if host_id is not None:
+        stmt = stmt.where(Assignment.host_id == host_id)
+    confirmed = 0
+    for assignment in db.scalars(stmt).all():
+        task = db.get(CleaningTask, assignment.task_id)
+        if task is None or task.current_assignment_id != assignment.id or task.status != TaskStatus.awaiting_confirmation:
             continue
-        expired += 1
-    return expired
+        if assignment.source in {"daily_planning", "calendar_change", "fast_path"} and assignment.dispatched_at is None:
+            continue
+        assignment.state = AssignmentState.accepted
+        assignment.responded_at = now
+        task.status = TaskStatus.confirmed
+        audit(
+            db,
+            host_id=task.host_id,
+            event_type="assignment_accepted",
+            entity_type="assignment",
+            entity_id=assignment.id,
+            reason="Assignment is confirmed until the cleaner declines",
+            details={"actor": "system", "cleaner_id": assignment.cleaner_id, "task_id": task.id},
+        )
+        confirmed += 1
+    return confirmed
+
+
+def expire_due_assignments(db: Session, settings: Settings, now: datetime) -> int:
+    """Confirm due replies. Undispatched planning rows stay put until a host approves automatic dispatch."""
+    return confirm_waiting_assignments(db, now)

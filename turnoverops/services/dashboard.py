@@ -27,7 +27,11 @@ def snapshot(db: Session, host: Host, now: datetime | None = None) -> dict:
         (task for task in tasks if task.window_start >= moment and task.status not in {TaskStatus.completed, TaskStatus.blocked}),
         key=lambda task: task.window_start,
     )[:20]
-    attention = [task for task in tasks if task.status in {TaskStatus.at_risk, TaskStatus.blocked, TaskStatus.unassigned}]
+    attention = [
+        task
+        for task in tasks
+        if task.host_resolved_at is None and task.status in {TaskStatus.at_risk, TaskStatus.blocked, TaskStatus.unassigned}
+    ]
     return {
         "metrics": {
             "properties": sum(1 for prop in properties if prop.active),
