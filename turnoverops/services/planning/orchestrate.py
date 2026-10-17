@@ -38,7 +38,12 @@ from turnoverops.services.audit import audit
 from turnoverops.services.cleaner_calendar import calendar_busy_intervals
 from turnoverops.services.evaluation import cleaner_inputs
 from turnoverops.services.host_policy import ensure_settings
-from turnoverops.services.planning.alerts import alert_unassigned, alert_unassigned_batch, release_assignment
+from turnoverops.services.planning.alerts import (
+    alert_unassigned,
+    alert_unassigned_batch,
+    release_assignment,
+    release_assignment_batch,
+)
 from turnoverops.services.planning.policy import (
     SKIP_DUPLICATE,
     SKIP_EMPTY,
@@ -741,12 +746,12 @@ def _apply(
             if item.task_id not in preserved_ids:
                 preserved_ids.append(item.task_id)
         for proposal in plan.assignments_to_create:
-            if _save_proposal(db, run, proposal, source, now, settings, replacing=False, dispatch=dispatch, notify=host_settings.notify_cleaners):
+            if _save_proposal(db, run, proposal, source, now, settings, replacing=False, dispatch=False, notify=host_settings.notify_cleaners):
                 created += 1
                 handled.add(proposal.task_id)
                 create_rows.append(_labeled(db, proposal.model_dump(mode="json"), proposal.task_id, proposal.cleaner_id))
         for proposal in plan.assignments_to_change:
-            if _save_proposal(db, run, proposal, source, now, settings, replacing=True, dispatch=dispatch, notify=host_settings.notify_cleaners):
+            if _save_proposal(db, run, proposal, source, now, settings, replacing=True, dispatch=False, notify=host_settings.notify_cleaners):
                 changed += 1
                 handled.add(proposal.task_id)
                 change_rows.append(_labeled(db, proposal.model_dump(mode="json"), proposal.task_id, proposal.cleaner_id))
@@ -790,6 +795,15 @@ def _apply(
                 task.id,
             )
         )
+    if dispatch:
+        task_ids = {row["task_id"] for row in create_rows + change_rows}
+        assignments = []
+        for task_id in task_ids:
+            task = db.get(CleaningTask, task_id)
+            assignment = db.get(Assignment, task.current_assignment_id) if task and task.current_assignment_id else None
+            if assignment is not None:
+                assignments.append(assignment)
+        release_assignment_batch(db, assignments, settings, now, notify=host_settings.notify_cleaners)
     return created, changed, preserved_ids, unassigned_rows, warnings, conflicts, create_rows, change_rows
 
 

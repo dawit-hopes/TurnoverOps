@@ -18,7 +18,7 @@ services:
       - key: PUBLIC_FRONTEND_URL
         value: https://turnover-ops-fe.vercel.app
       - key: APP_BASE_URL
-        sync: false
+        value: https://turnoverops.onrender.com
       - key: ENABLE_SCHEDULER
         value: "true"
       - key: SCHEDULER_INTERVAL_SECONDS
@@ -34,7 +34,7 @@ services:
       - key: GOOGLE_CALENDAR_REDIRECT_URI
         sync: false
       - key: CLEANER_GOOGLE_CALENDAR_REDIRECT_URI
-        sync: false
+        value: https://turnoverops.onrender.com/public/cleaner-calendar/callback
       - key: GEMINI_API_KEY
         sync: false
       - key: SMTP_USERNAME

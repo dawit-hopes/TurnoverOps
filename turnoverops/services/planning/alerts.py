@@ -146,21 +146,43 @@ def release_assignment(
     now: datetime,
     *,
     notify: bool,
-) -> None:
+    send_email: bool = True,
+) -> bool:
     if assignment.dispatched_at is not None:
-        return
+        return False
     assignment.dispatched_at = now
-    if not notify:
-        return
-    from turnoverops.services.cleaner_mail import send_assignment_email
-
-    send_assignment_email(db, assignment, settings, now)
     task = db.get(CleaningTask, assignment.task_id)
     task_prop = db.get(Property, task.property_id) if task is not None else None
-    if task is not None and task_prop is not None:
+    if notify and send_email:
+        from turnoverops.services.cleaner_mail import send_assignment_email
+
+        send_assignment_email(db, assignment, settings, now)
+    if notify and task is not None and task_prop is not None:
         from turnoverops.services.calendar_sync import publish_task
 
         publish_task(db, task, task_prop, settings)
+    return True
+
+
+def release_assignment_batch(
+    db: Session,
+    assignments: list[Assignment],
+    settings: Settings,
+    now: datetime,
+    *,
+    notify: bool,
+) -> int:
+    """Mark assignments dispatched, publish events, and email one grouped schedule per cleaner."""
+    dispatched_ids = [
+        assignment.id
+        for assignment in assignments
+        if release_assignment(db, assignment, settings, now, notify=notify, send_email=False)
+    ]
+    if dispatched_ids and notify:
+        from turnoverops.services.cleaner_mail import send_weekly_schedules
+
+        send_weekly_schedules(db, settings, now, host_id=assignments[0].host_id, assignment_ids=dispatched_ids)
+    return len(dispatched_ids)
 
 
 def dispatch_pending(db: Session, host_id: str, settings: Settings, now: datetime, *, notify: bool) -> int:
@@ -172,11 +194,10 @@ def dispatch_pending(db: Session, host_id: str, settings: Settings, now: datetim
             Assignment.state.in_(tuple(LIVE_ASSIGNMENT_STATES)),
         )
     ).all()
-    released = 0
+    pending = []
     for assignment in rows:
         task = db.get(CleaningTask, assignment.task_id)
         if task is None or task.current_assignment_id != assignment.id:
             continue
-        release_assignment(db, assignment, settings, now, notify=notify)
-        released += 1
-    return released
+        pending.append(assignment)
+    return release_assignment_batch(db, pending, settings, now, notify=notify)

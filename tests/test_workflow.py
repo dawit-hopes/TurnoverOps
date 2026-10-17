@@ -1,6 +1,5 @@
 from datetime import UTC, datetime, timedelta
 
-from turnoverops.integrations.gemini_api import InterpretedIntent
 from turnoverops.integrations.google_calendar_api import CalendarError
 from turnoverops.models import Assignment, AuditEvent, CalendarEventMapping, IntegrationState, Notification
 from tests.conftest import STAYS, create_cleaner, create_property, list_tasks, login, sync, task_by_key

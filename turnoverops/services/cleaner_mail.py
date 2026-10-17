@@ -163,6 +163,8 @@ def send_weekly_schedules(
 ) -> list[MailResult]:
     zone = mail_zone(settings)
     start, end, week_label = _week_bounds(now, zone)
+    if assignment_ids is not None:
+        week_label = "New assignments"
     stmt = select(Assignment).where(Assignment.state.in_(tuple(LIVE_ASSIGNMENT_STATES)))
     if host_id is not None:
         stmt = stmt.where(Assignment.host_id == host_id)
@@ -216,6 +218,8 @@ def send_weekly_schedules(
             rendered_jobs.append(_job_view(cleaner, prop, task, assignment, token, settings))
         subject, text, html_body = render_weekly_email(cleaner, rendered_jobs, week_label, settings)
         note.body = text[:2000]
+        if assignment_ids is not None:
+            note.provider_response = {"batch_assignment_ids": [assignment.id for assignment, _, _ in jobs]}
         _deliver(db, note, settings, now, to=cleaner.email, subject=subject, text=text, html=html_body, via="weekly")
         if note.status == "sent":
             for assignment, task, prop in jobs:
@@ -264,7 +268,14 @@ def retry_smtp_notifications(db: Session, settings: Settings, *, now: datetime) 
             else:
                 send_assignment_email(db, assignment, settings, now)
         elif note.message_type == _WEEKLY:
-            send_weekly_schedules(db, settings, now, host_id=note.host_id)
+            batch_ids = (note.provider_response or {}).get("batch_assignment_ids")
+            send_weekly_schedules(
+                db,
+                settings,
+                now,
+                host_id=note.host_id,
+                assignment_ids=batch_ids if isinstance(batch_ids, list) else None,
+            )
         elif note.message_type == _MANAGER and note.dedupe_key and note.dedupe_key.startswith("manager-rejection:"):
             assignment = db.get(Assignment, note.dedupe_key.split(":", 1)[1])
             if assignment is not None:
@@ -468,11 +479,13 @@ def render_assignment_email(cleaner, prop, task, assignment, token: str, setting
 def render_weekly_email(cleaner, jobs: list[dict], week_label: str, settings: Settings) -> tuple[str, str, str]:
     zone_name = mail_zone(settings).key
     total_minutes = sum(job["duration_minutes"] for job in jobs)
-    subject = f"Cleaning schedule — {week_label}"
+    is_new_assignments = week_label == "New assignments"
+    subject = "New cleaning assignments" if is_new_assignments else f"Cleaning schedule — {week_label}"
+    schedule_intro = "Your new cleaning assignments." if is_new_assignments else f"Your cleaning schedule for {week_label}."
     text = [
         f"Hello {cleaner.name},",
         "",
-        f"Your cleaning schedule for {week_label}.",
+        schedule_intro,
         f"Jobs: {len(jobs)}",
         f"Total time: {_format_duration(total_minutes)}",
         f"Times are shown in {_zone_label(mail_zone(settings))}. Empty days are omitted.",
@@ -481,7 +494,7 @@ def render_weekly_email(cleaner, jobs: list[dict], week_label: str, settings: Se
     ]
     html_parts = [
         f"<p>Hello {html.escape(cleaner.name)},</p>",
-        f"<p>Your cleaning schedule for {html.escape(week_label)}.</p>",
+        f"<p>{html.escape(schedule_intro)}</p>",
         f"<p>Jobs: {len(jobs)}. Total time: {html.escape(_format_duration(total_minutes))}.</p>",
         f"<p>Times are shown in {html.escape(_zone_label(mail_zone(settings)))}. Empty days are omitted.</p>",
         "<p>Each job is already assigned. Act only if you cannot do one. There is no accept step.</p>",
@@ -719,6 +732,11 @@ def _deliver(
     html: str,
     via: str,
 ) -> None:
+    context = {
+        key: value
+        for key, value in (note.provider_response or {}).items()
+        if key == "batch_assignment_ids"
+    }
     try:
         send_smtp_email(settings, to=to, subject=subject, text=text, html=html)
     except SmtpNotConfigured as exc:
@@ -730,7 +748,7 @@ def _deliver(
     else:
         note.status = "sent"
         note.next_retry_at = None
-        note.provider_response = {"status": "sent", "via": via}
+        note.provider_response = {**context, "status": "sent", "via": via}
         audit(
             db,
             host_id=note.host_id,
@@ -752,7 +770,12 @@ def _finish(db, note, status: str, error: str, now: datetime, *, transient: bool
         note.next_retry_at = now + timedelta(seconds=settings.notification_retry_seconds * note.retry_count)
     else:
         note.next_retry_at = None
-    note.provider_response = {"error": error[:300], "status": status}
+    context = {
+        key: value
+        for key, value in (note.provider_response or {}).items()
+        if key == "batch_assignment_ids"
+    }
+    note.provider_response = {**context, "error": error[:300], "status": status}
     audit(
         db,
         host_id=note.host_id,
