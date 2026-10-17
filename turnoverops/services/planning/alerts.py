@@ -122,7 +122,10 @@ def alert_unassigned_batch(db, host, items, settings, *, email_client=None) -> N
     except (EmailError, SmtpError) as exc:
         delivery.status = "failed"
         delivery.error = str(exc)[:500]
-        delivery.provider_response = {"status_code": exc.status_code}
+        delivery.provider_response = {
+            "status_code": getattr(exc, "status_code", None),
+            "transient": getattr(exc, "transient", False),
+        }
     else:
         delivery.status = "delivered"
         delivery.provider_response = payload if isinstance(payload, dict) else {"ok": True}
