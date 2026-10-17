@@ -1,0 +1,16 @@
+{
+  "reservations": [
+    {
+      "external_uid": "stay-1",
+      "start": "2026-11-01T15:00:00Z",
+      "end": "2026-11-03T10:00:00Z",
+      "summary": "Demo stay"
+    },
+    {
+      "external_uid": "stay-2",
+      "start": "2026-11-03T15:00:00Z",
+      "end": "2026-11-05T10:00:00Z",
+      "summary": "Demo stay"
+    }
+  ]
+}
