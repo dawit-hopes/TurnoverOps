@@ -5,6 +5,7 @@ services:
     plan: starter
     dockerfilePath: ./Dockerfile
     dockerContext: .
+    autoDeployTrigger: checksPass
     preDeployCommand: alembic upgrade head
     healthCheckPath: /health
     envVars:
@@ -33,10 +34,6 @@ services:
       - key: CLEANER_GOOGLE_CALENDAR_REDIRECT_URI
         sync: false
       - key: GEMINI_API_KEY
-        sync: false
-      - key: TELEGRAM_BOT_TOKEN
-        sync: false
-      - key: TELEGRAM_WEBHOOK_SECRET
         sync: false
       - key: SMTP_USERNAME
         sync: false

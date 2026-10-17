@@ -4,7 +4,7 @@ from datetime import UTC, datetime
 from apscheduler.schedulers.background import BackgroundScheduler
 
 from turnoverops.core.config import Settings
-from turnoverops.services.notifications import retry_notifications
+from turnoverops.services.cleaner_mail import retry_smtp_notifications
 from turnoverops.services.planning.daily import run_due_daily_plans
 from turnoverops.services.planning.orchestrate import orchestrate
 from turnoverops.services.sync import sync_due_icals
@@ -18,7 +18,7 @@ def run_maintenance(session_factory, settings: Settings) -> None:
     try:
         now = datetime.now(UTC)
         expire_due_assignments(db, settings, now)
-        retry_notifications(db, settings, now=now)
+        retry_smtp_notifications(db, settings, now=now)
         pending = sync_due_icals(db, settings, now)
         db.commit()
         for host_id, task_ids in pending.items():

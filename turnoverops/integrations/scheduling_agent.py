@@ -1,4 +1,4 @@
-"""Gemini client for scheduling plans. Telegram intent classification stays in gemini_api."""
+"""Gemini client for scheduling plans."""
 
 from dataclasses import dataclass
 

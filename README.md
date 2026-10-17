@@ -2,7 +2,7 @@
 
 Backend for a short-term rental host who needs cleaning tasks to follow reservation changes. The API proposes a cleaner and waits for that cleaner to accept. It does not mark the task confirmed before acceptance.
 
-The scheduling rules are ordinary Python. Google sign-in identifies the host. Gemini, Telegram, and Google Calendar are optional: if they are not configured, task management still works. Properties can sync reservations from an iCalendar URL.
+The scheduling rules are ordinary Python. Google sign-in identifies the host. Gemini and Google Calendar are optional: if they are not configured, task management still works. Properties can sync reservations from an iCalendar URL.
 
 When a cleaner is added, TurnoverOps saves their details and sends a deduplicated welcome email through Gmail SMTP. The message includes an optional expiring Google Calendar connection link. Until they connect, scheduling uses configured working hours and labels external availability unverified. A connected calendar that cannot be checked is excluded from automatic scheduling.
 
@@ -39,7 +39,6 @@ Imported stays become cleaning tasks for the gap between checkout and the next c
 
 A feasible cleaner is stored as `awaiting_confirmation`. `POST /assignments/{id}/accept` moves the task to `confirmed`. A decline, or a confirmation timeout, tries the next feasible cleaner until `MAX_ASSIGNMENT_ATTEMPTS`. After that the task becomes `at_risk` and the host is notified. Work that has already started is not given to someone else; the host is asked to intervene.
 
-`DEV_MODE=true` exposes `POST /dev/telegram/updates` for a Telegram update without a bot. Those responses include `"simulated": true`. Cleaner messages that are not an exact command stay unanswered until they are clear, and they do not change the task.
 
 ## Environment
 
@@ -49,7 +48,6 @@ See [.env.example](.env.example). Secrets stay in the environment. `FRONTEND_ORI
 | --- | --- |
 | `GOOGLE_CLIENT_ID` | Audience for host sign-in |
 | `JWT_SECRET` | Signs the API session token |
-| `TELEGRAM_BOT_TOKEN` / `TELEGRAM_WEBHOOK_SECRET` | Cleaner messages. Webhooks are rejected without the secret |
 | `GEMINI_API_KEY` | Optional intent parsing. Exact commands still work without it |
 | `GOOGLE_CALENDAR_CLIENT_ID` / `GOOGLE_CALENDAR_CLIENT_SECRET` | Optional calendar publishing after a cleaner accepts |
 | `GOOGLE_CALENDAR_REDIRECT_URI` | Existing host calendar OAuth callback in the frontend |
@@ -63,4 +61,4 @@ See [.env.example](.env.example). Secrets stay in the environment. `FRONTEND_ORI
 pytest
 ```
 
-External services are mocked. The suite covers duplicate imports, infeasible cleaners, confirmation, bounded decline, escalation, Telegram deduplication, invite expiry, ambiguous intent, notification retry, host isolation, and a calendar failure that leaves the confirmed task in place.
+External services are mocked. The suite covers duplicate imports, infeasible cleaners, confirmation, bounded decline, escalation, notification retry, host isolation, and a calendar failure that leaves the confirmed task in place.

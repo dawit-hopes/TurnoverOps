@@ -7,7 +7,7 @@ Revises: 004
 import sqlalchemy as sa
 from alembic import op
 
-revision = "005"
+revision = "005_calendar_oauth"
 down_revision = "004"
 branch_labels = None
 depends_on = None

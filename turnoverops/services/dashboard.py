@@ -51,7 +51,6 @@ def snapshot(db: Session, host: Host, now: datetime | None = None) -> dict:
 def integration_status(db: Session, host: Host, settings: Settings) -> dict:
     return {
         "google_login": {"configured": bool(settings.google_client_id)},
-        "telegram": {"configured": bool(settings.telegram_bot_token)},
         "gemini": {"configured": bool(settings.gemini_api_key)},
         "google_calendar": {
             "configured": calendar_configured(settings),

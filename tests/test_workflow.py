@@ -2,7 +2,7 @@ from datetime import UTC, datetime, timedelta
 
 from turnoverops.integrations.gemini_api import InterpretedIntent
 from turnoverops.integrations.google_calendar_api import CalendarError
-from turnoverops.models import Assignment, AuditEvent, CalendarEventMapping, IntegrationState, Notification, TelegramInvite
+from turnoverops.models import Assignment, AuditEvent, CalendarEventMapping, IntegrationState, Notification
 from tests.conftest import STAYS, create_cleaner, create_property, list_tasks, login, sync, task_by_key
 
 LATER = [
@@ -113,161 +113,6 @@ def test_no_feasible_cleaner_escalates(client):
     assert len(again) == len(coverage)
 
 
-def test_started_and_completed_tasks_are_not_reassigned(client):
-    headers, prop, ada, _boa = _setup(client)
-    sync(client, headers, prop["id"], STAYS)
-    task = _gap(client, headers, prop["id"])
-    client.post(f"/assignments/{task['assignment']['id']}/accept", headers=headers)
-    started = client.post(
-        "/dev/telegram/updates",
-        json={"update_id": 1, "message": {"text": "start", "from": {"id": 1}, "chat": {"id": 1}}},
-    )
-    assert started.status_code == 404 or started.json()["status"] == "clarify"
-    invite = client.post(f"/cleaners/{ada['id']}/invites", headers=headers).json()
-    token = invite["invite_url"].split("start=")[1]
-    connected = client.post(
-        "/dev/telegram/updates",
-        json={"update_id": 2, "message": {"text": f"/start {token}", "from": {"id": 42}, "chat": {"id": 42}}},
-    )
-    assert connected.json()["status"] == "connected"
-    assert connected.json()["simulated"] is True
-    started = client.post(
-        "/dev/telegram/updates",
-        json={
-            "update_id": 3,
-            "callback_query": {
-                "data": f"start:{task['assignment']['id']}",
-                "from": {"id": 42},
-                "message": {"chat": {"id": 42}},
-            },
-        },
-    )
-    assert started.json()["status"] == "applied"
-    sync(client, headers, prop["id"], LATER)
-    in_progress = _gap(client, headers, prop["id"])
-    assert in_progress["status"] == "at_risk"
-    assert in_progress["assigned_cleaner_id"] == ada["id"]
-    assert in_progress["assignment"]["state"] == "accepted"
-
-    headers = login(client, "done-host")
-    prop = create_property(client, headers)
-    ada = create_cleaner(client, headers, "Ada", work_start="09:00:00", work_end="17:00:00", preferred_property_ids=[prop["id"]])
-    sync(client, headers, prop["id"], STAYS)
-    task = _gap(client, headers, prop["id"])
-    client.post(f"/assignments/{task['assignment']['id']}/accept", headers=headers)
-    invite = client.post(f"/cleaners/{ada['id']}/invites", headers=headers).json()
-    token = invite["invite_url"].split("start=")[1]
-    client.post(
-        "/dev/telegram/updates",
-        json={"update_id": 4, "message": {"text": f"/start {token}", "from": {"id": 7}, "chat": {"id": 7}}},
-    )
-    done = client.post(
-        "/dev/telegram/updates",
-        json={
-            "update_id": 5,
-            "callback_query": {
-                "data": f"complete:{task['assignment']['id']}",
-                "from": {"id": 7},
-                "message": {"chat": {"id": 7}},
-            },
-        },
-    )
-    assert done.json()["status"] == "applied"
-    sync(client, headers, prop["id"], LATER)
-    finished = _gap(client, headers, prop["id"])
-    assert finished["status"] == "completed"
-    assert finished["assignment"]["state"] == "accepted"
-    assert finished["assigned_cleaner_id"] == ada["id"]
-
-
-def test_duplicate_telegram_update_accepts_once(client):
-    headers, prop, ada, _boa = _setup(client)
-    sync(client, headers, prop["id"], STAYS)
-    invite = client.post(f"/cleaners/{ada['id']}/invites", headers=headers).json()
-    token = invite["invite_url"].split("start=")[1]
-    client.post(
-        "/integrations/telegram/webhook",
-        json={"update_id": 9, "message": {"text": f"/start {token}", "from": {"id": 9}, "chat": {"id": 9}}},
-        headers={"X-Telegram-Bot-Api-Secret-Token": "hook-secret"},
-    )
-    task = _gap(client, headers, prop["id"])
-    update = {
-        "update_id": 10,
-        "callback_query": {
-            "data": f"decline:{task['assignment']['id']}",
-            "from": {"id": 9},
-            "message": {"chat": {"id": 9}},
-        },
-    }
-    secret = {"X-Telegram-Bot-Api-Secret-Token": "hook-secret"}
-    first = client.post("/integrations/telegram/webhook", json=update, headers=secret)
-    second = client.post("/integrations/telegram/webhook", json=update, headers=secret)
-    assert first.json()["status"] == "applied"
-    assert second.json()["status"] == "duplicate"
-    task = _gap(client, headers, prop["id"])
-    assert task["status"] == "confirmed"
-    db = client.app.state.session_factory()
-    try:
-        events = db.query(AuditEvent).filter(AuditEvent.event_type == "assignment_declined").all()
-        assert len(events) == 1
-    finally:
-        db.close()
-
-
-def test_invalid_and_expired_invites_are_rejected(client):
-    headers, _prop, ada, _boa = _setup(client)
-    bad = client.post(
-        "/dev/telegram/updates",
-        json={"update_id": 1, "message": {"text": "/start nope", "from": {"id": 1}, "chat": {"id": 1}}},
-    )
-    assert bad.status_code == 400
-    invite = client.post(f"/cleaners/{ada['id']}/invites", headers=headers).json()
-    token = invite["invite_url"].split("start=")[1]
-    client.post(f"/cleaners/{ada['id']}/invites/revoke", headers=headers)
-    revoked = client.post(
-        "/dev/telegram/updates",
-        json={"update_id": 2, "message": {"text": f"/start {token}", "from": {"id": 2}, "chat": {"id": 2}}},
-    )
-    assert revoked.status_code == 400
-    fresh = client.post(f"/cleaners/{ada['id']}/invites", headers=headers).json()
-    fresh_token = fresh["invite_url"].split("start=")[1]
-    db = client.app.state.session_factory()
-    try:
-        row = db.query(TelegramInvite).order_by(TelegramInvite.created_at.desc()).first()
-        row.expires_at = datetime.now(UTC) - timedelta(minutes=1)
-        db.commit()
-    finally:
-        db.close()
-    expired = client.post(
-        "/dev/telegram/updates",
-        json={"update_id": 3, "message": {"text": f"/start {fresh_token}", "from": {"id": 3}, "chat": {"id": 3}}},
-    )
-    assert expired.status_code == 400
-
-
-def test_ambiguous_intent_does_not_change_the_task(client, monkeypatch):
-    headers, prop, ada, _boa = _setup(client)
-    sync(client, headers, prop["id"], STAYS)
-    before = _gap(client, headers, prop["id"])
-    invite = client.post(f"/cleaners/{ada['id']}/invites", headers=headers).json()
-    token = invite["invite_url"].split("start=")[1]
-    client.post(
-        "/dev/telegram/updates",
-        json={"update_id": 1, "message": {"text": f"/start {token}", "from": {"id": 5}, "chat": {"id": 5}}},
-    )
-
-    def ambiguous(text, settings, client=None):
-        return InterpretedIntent("UNKNOWN", 0.2, "Do you want to accept or decline?", "gemini")
-
-    monkeypatch.setattr("turnoverops.integrations.gemini_api.interpret", ambiguous)
-    response = client.post(
-        "/dev/telegram/updates",
-        json={"update_id": 2, "message": {"text": "maybe later", "from": {"id": 5}, "chat": {"id": 5}}},
-    )
-    assert response.json()["status"] == "clarify"
-    assert _gap(client, headers, prop["id"]) == before
-
-
 def test_notification_failure_is_retried_without_confirming_the_task(client, monkeypatch):
     import smtplib
 
@@ -319,12 +164,12 @@ def test_notification_failure_is_retried_without_confirming_the_task(client, mon
         db.commit()
     finally:
         db.close()
-    from turnoverops.services.notifications import retry_notifications
+    from turnoverops.services.cleaner_mail import retry_smtp_notifications
 
     db = client.app.state.session_factory()
     try:
         failed["on"] = False
-        retry_notifications(db, client.app.state.settings, now=datetime.now(UTC))
+        retry_smtp_notifications(db, client.app.state.settings, now=datetime.now(UTC))
         db.commit()
         notes = db.query(Notification).filter(Notification.channel == "smtp", Notification.message_type == "assignment_email").all()
         assert notes
@@ -371,28 +216,3 @@ def test_calendar_failure_does_not_change_confirmation(client, monkeypatch):
         db.close()
 
 
-def test_dev_simulation_is_hidden_when_disabled(tmp_path):
-    from fastapi.testclient import TestClient
-
-    from turnoverops.app import create_app
-    from turnoverops.core.config import Settings
-    from turnoverops.models import Base
-
-    settings = Settings(
-        _env_file=None,
-        database_url=f"sqlite:///{tmp_path}/closed.db",
-        jwt_secret="test-secret-that-is-long-enough-for-hs256",
-        google_client_id="test-client",
-        dev_mode=False,
-        enable_scheduler=False,
-    )
-    application = create_app(settings)
-    Base.metadata.create_all(application.state.engine)
-    with TestClient(application) as closed:
-        assert closed.post("/dev/telegram/updates", json={"update_id": 1}).status_code == 404
-    application.state.engine.dispose()
-
-
-def test_webhook_secret_is_required(client):
-    response = client.post("/integrations/telegram/webhook", json={"update_id": 1})
-    assert response.status_code == 401

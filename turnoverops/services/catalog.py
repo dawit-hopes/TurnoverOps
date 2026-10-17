@@ -116,7 +116,6 @@ def create_cleaner(db: Session, host: Host, body: CleanerIn) -> Cleaner:
         host_id=host.id,
         name=body.name,
         email=body.email,
-        telegram_username=body.telegram_username,
         timezone=body.timezone,
         working_days=body.working_days,
         work_start=body.work_start,

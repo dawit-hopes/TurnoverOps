@@ -14,12 +14,10 @@ from turnoverops.models.tables import (
     IntegrationState,
     Notification,
     NotificationDelivery,
-    ProcessedUpdate,
     Property,
     RejectionToken,
     Reservation,
     ScheduledJobRun,
-    TelegramInvite,
 )
 
 __all__ = [
@@ -38,11 +36,9 @@ __all__ = [
     "IntegrationState",
     "Notification",
     "NotificationDelivery",
-    "ProcessedUpdate",
     "Property",
     "RejectionToken",
     "Reservation",
     "ScheduledJobRun",
-    "TelegramInvite",
     "utcnow",
 ]

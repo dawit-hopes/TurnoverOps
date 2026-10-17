@@ -230,7 +230,6 @@ class SyncOut(APIModel):
 class CleanerIn(APIModel):
     name: str = Field(min_length=1, max_length=200)
     email: str = Field(min_length=3, max_length=320)
-    telegram_username: str | None = None
     timezone: str = "UTC"
     working_days: list[int] = Field(default_factory=lambda: [0, 1, 2, 3, 4])
     work_start: time = time(9, 0)
@@ -273,7 +272,6 @@ class CleanerIn(APIModel):
 class CleanerUpdate(APIModel):
     name: str | None = Field(default=None, min_length=1, max_length=200)
     email: str | None = None
-    telegram_username: str | None = None
     timezone: str | None = None
     working_days: list[int] | None = None
     work_start: time | None = None
@@ -308,26 +306,18 @@ class CleanerOut(APIModel):
     id: str
     name: str
     email: str | None
-    telegram_username: str | None
-    telegram_user_id: str | None
     timezone: str
     working_days: list[int]
     work_start: time
     work_end: time
     max_jobs_per_day: int | None
     active: bool
-    telegram_status: str
     calendar_status: str
     unavailable_dates: list[str]
     property_ids: list[str]
     preferred_property_ids: list[str]
     created_at: datetime
     updated_at: datetime
-
-
-class InviteOut(APIModel):
-    invite_url: str
-    expires_at: datetime
 
 
 class ReservationOut(APIModel):
@@ -532,7 +522,6 @@ class CalendarCallbackIn(APIModel):
 
 class IntegrationOut(APIModel):
     google_login: dict
-    telegram: dict
     gemini: dict
     google_calendar: dict
 

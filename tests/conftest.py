@@ -22,7 +22,6 @@ def settings(tmp_path) -> Settings:
         confirmation_timeout_minutes=60,
         notification_retry_seconds=60,
         max_notification_retries=3,
-        telegram_webhook_secret="hook-secret",
         google_calendar_client_id="calendar-client",
         google_calendar_client_secret="calendar-secret",
     )

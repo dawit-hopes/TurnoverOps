@@ -72,16 +72,12 @@ class Cleaner(Timestamped, Base):
     host_id: Mapped[str] = mapped_column(ForeignKey("hosts.id"), index=True)
     name: Mapped[str] = mapped_column(String(200))
     email: Mapped[str | None] = mapped_column(String(320))
-    telegram_username: Mapped[str | None] = mapped_column(String(64))
-    telegram_user_id: Mapped[str | None] = mapped_column(String(64), index=True)
-    telegram_chat_id: Mapped[str | None] = mapped_column(String(64))
     timezone: Mapped[str] = mapped_column(String(64))
     working_days: Mapped[list] = mapped_column(JSON)
     work_start: Mapped[time] = mapped_column(Time)
     work_end: Mapped[time] = mapped_column(Time)
     max_jobs_per_day: Mapped[int | None] = mapped_column(Integer)
     active: Mapped[bool] = mapped_column(Boolean, default=True)
-    telegram_status: Mapped[str] = mapped_column(String(32), default="disconnected")
     unavailable_dates: Mapped[list] = mapped_column(JSON, default=list)
     calendar_status: Mapped[str] = mapped_column(String(24), default="not_connected")
     calendar_connect_token_hash: Mapped[str | None] = mapped_column(String(64))
@@ -231,29 +227,6 @@ class IntegrationState(Base):
     key: Mapped[str] = mapped_column(String(64))
     value: Mapped[dict | None] = mapped_column(JSON)
     updated_at: Mapped[datetime] = mapped_column(UtcDateTime, default=utcnow)
-
-
-class TelegramInvite(Base):
-    __tablename__ = "telegram_invites"
-
-    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=_uuid)
-    host_id: Mapped[str] = mapped_column(ForeignKey("hosts.id"), index=True)
-    cleaner_id: Mapped[str] = mapped_column(ForeignKey("cleaners.id"), index=True)
-    token_hash: Mapped[str] = mapped_column(String(64), unique=True, index=True)
-    expires_at: Mapped[datetime] = mapped_column(UtcDateTime)
-    revoked_at: Mapped[datetime | None] = mapped_column(UtcDateTime)
-    used_at: Mapped[datetime | None] = mapped_column(UtcDateTime)
-    created_at: Mapped[datetime] = mapped_column(UtcDateTime, default=utcnow)
-
-
-class ProcessedUpdate(Base):
-    __tablename__ = "processed_updates"
-    __table_args__ = (UniqueConstraint("provider", "update_id"),)
-
-    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=_uuid)
-    provider: Mapped[str] = mapped_column(String(32))
-    update_id: Mapped[str] = mapped_column(String(64))
-    processed_at: Mapped[datetime] = mapped_column(UtcDateTime, default=utcnow)
 
 
 class CalendarEventMapping(Base):

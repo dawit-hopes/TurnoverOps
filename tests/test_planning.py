@@ -673,14 +673,7 @@ def test_malformed_json_and_exhausted_repairs_keep_the_previous_assignment(clien
     assert harbor["id"]
 
 
-def test_review_only_persists_the_plan_without_telegram_and_confirmed_work_is_not_renotified(client, app, monkeypatch):
-    sent = []
-
-    def boom(*args, **kwargs):
-        sent.append(args)
-        raise AssertionError("telegram should not be called")
-
-    monkeypatch.setattr("turnoverops.services.notifications.telegram_api.send_message", boom)
+def test_review_only_persists_the_plan_and_confirmed_work_is_not_renotified(client, app):
     headers = login(client)
     _put_settings(client, headers, notify_cleaners=True, dispatch_mode="review_only")
     prop = _property(client, headers, "Harbor", _stays())
@@ -695,7 +688,6 @@ def test_review_only_persists_the_plan_without_telegram_and_confirmed_work_is_no
     assert run.status_code == 200, run.text
     assert run.json()["assignments_created"] == 0
     assert len(_notes(app, host_id, "cleaner")) == before
-    assert sent == []
     assert all(row.dispatched_at is None for row in _assignments(app, host_id))
 
 

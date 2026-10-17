@@ -8,7 +8,7 @@ from turnoverops.api.deps import AppSettings, CurrentHost, Db
 from turnoverops.api.pagination import window
 from turnoverops.api.present import cleaner_out, decision_out, tasks_out
 from turnoverops.core.errors import AppError
-from turnoverops.core.security import create_token, decode_token, secrets_equal
+from turnoverops.core.security import create_token, decode_token
 from turnoverops.integrations import google_calendar_api, google_identity
 from turnoverops.domain import LOCKED_TASK_STATUSES, AssignmentState, TaskStatus
 from turnoverops.models import Assignment, AuditEvent, Cleaner, CleaningTask, Host, Notification, Property, Reservation
@@ -31,7 +31,6 @@ from turnoverops.schemas import (
     SettingsUpdate,
     ApprovePlanIn,
     IntegrationOut,
-    InviteOut,
     NotificationOut,
     OnboardingOut,
     Page,
@@ -58,12 +57,10 @@ from turnoverops.services.catalog import complete_onboarding, create_cleaner, cr
 from turnoverops.services.cleaner_mail import send_cleaner_welcome_email
 from turnoverops.services.dashboard import integration_status, snapshot
 from turnoverops.services.evaluation import evaluate_window
-from turnoverops.services.invites import create_invite, revoke_invites
 from turnoverops.services.scope import owned
 from turnoverops.services.host_policy import ensure_settings, load_policy
 from turnoverops.services.planning.alerts import alert_unassigned, manager_alert_state
 from turnoverops.services.sync import generate_tasks, shift_demo_booking, sync_demo, sync_ical, sync_stored
-from turnoverops.services.telegram_flow import handle_update
 from turnoverops.services.workflow import (
     accept_assignment,
     close_assignment,
@@ -223,19 +220,6 @@ def deactivate_cleaner(cleaner_id: str, host: CurrentHost, db: Db) -> CleanerOut
     cleaner = owned(db, Cleaner, host.id, cleaner_id)
     cleaner.active = False
     return cleaner_out(db, cleaner)
-
-
-@cleaner_router.post("/{cleaner_id}/invites", response_model=InviteOut)
-def invite_cleaner(cleaner_id: str, host: CurrentHost, settings: AppSettings, db: Db) -> InviteOut:
-    cleaner = owned(db, Cleaner, host.id, cleaner_id)
-    url, expires_at = create_invite(db, cleaner, settings)
-    return InviteOut(invite_url=url, expires_at=expires_at)
-
-
-@cleaner_router.post("/{cleaner_id}/invites/revoke", status_code=204)
-def revoke_cleaner_invites(cleaner_id: str, host: CurrentHost, db: Db) -> None:
-    cleaner = owned(db, Cleaner, host.id, cleaner_id)
-    revoke_invites(db, cleaner)
 
 
 @reservation_router.get("", response_model=Page[ReservationOut])
@@ -527,27 +511,6 @@ def calendar_callback(body: CalendarCallbackIn, host: CurrentHost, settings: App
 @integration_router.post("/google-calendar/disconnect", status_code=204)
 def disconnect_calendar(host: CurrentHost, db: Db) -> None:
     disconnect(db, host.id)
-
-
-@integration_router.post("/telegram/webhook")
-def telegram_webhook(
-    update: dict,
-    settings: AppSettings,
-    db: Db,
-    secret: str | None = Header(default=None, alias="X-Telegram-Bot-Api-Secret-Token"),
-) -> dict:
-    if not settings.telegram_webhook_secret:
-        raise AppError(503, "webhook_unconfigured", "Telegram webhook secret is not configured")
-    if secret is None or not secrets_equal(secret, settings.telegram_webhook_secret):
-        raise AppError(401, "unauthorized", "Invalid webhook secret")
-    return handle_update(db, update, settings)
-
-
-@dev_router.post("/telegram/updates")
-def simulate_telegram(update: dict, settings: AppSettings, db: Db) -> dict:
-    result = handle_update(db, update, settings)
-    result["simulated"] = True
-    return result
 
 
 def _planning_client(request: Request):

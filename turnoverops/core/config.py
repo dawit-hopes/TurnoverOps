@@ -10,9 +10,6 @@ class Settings(BaseSettings):
     google_client_id: str = ""
     frontend_origin: str = "http://localhost:5173"
     dev_mode: bool = False
-    telegram_bot_token: str = ""
-    telegram_webhook_secret: str = ""
-    telegram_bot_username: str = "OfficialMiseAIBot"
     gemini_api_key: str = ""
     gemini_model: str = "gemini-2.0-flash"
     google_calendar_client_id: str = ""
