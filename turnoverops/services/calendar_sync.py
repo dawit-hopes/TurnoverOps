@@ -96,7 +96,7 @@ def publish_task(db: Session, task: CleaningTask, prop: Property, settings: Sett
             {
                 "summary": f"{prop.name} cleaning",
                 "description": f"Task {task.id}. Status {task.status}.",
-                "start": {"dateTime": assignment.scheduled_start.isoformat()},
+                "start": {"dateTime": assignment.scheduled_start.isoformat()}, # pyright: ignore[reportGeneralTypeIssues]
                 "end": {"dateTime": assignment.scheduled_end.isoformat()},
             },
         )

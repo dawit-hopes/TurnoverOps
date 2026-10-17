@@ -455,9 +455,12 @@ def _send_assignment_batch(
 ) -> None:
     if not notify or not assignment_ids:
         return
-    from turnoverops.services.cleaner_mail import send_weekly_schedules
+    from turnoverops.services.cleaner_mail import send_assignment_email
 
-    send_weekly_schedules(db, settings, now, host_id=host_id, assignment_ids=assignment_ids)
+    for assignment_id in assignment_ids:
+        assignment = db.get(Assignment, assignment_id)
+        if assignment is not None and assignment.host_id == host_id:
+            send_assignment_email(db, assignment, settings, now)
 
 
 def accept_assignment(db: Session, assignment: Assignment, now: datetime, settings: Settings, *, actor: str) -> CleaningTask:

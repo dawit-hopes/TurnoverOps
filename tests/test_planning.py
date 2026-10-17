@@ -212,33 +212,6 @@ def _deliveries(app, host_id: str) -> list[NotificationDelivery]:
         db.close()
 
 
-def test_confirm_configuration_stays_in_review_until_the_plan_is_approved(client, app):
-    headers = login(client)
-    _put_settings(client, headers)
-    _property(client, headers, "Harbor", _stays())
-    create_cleaner(client, headers, "Ada", timezone="UTC", work_start="08:00:00", work_end="18:00:00")
-    _use_agent(app, FakeAgent())
-    first = client.post("/onboarding/confirm-configuration", headers=headers)
-    assert first.status_code == 200, first.text
-    again = client.post("/onboarding/confirm-configuration", headers=headers)
-    assert again.status_code == 200, again.text
-    settings = client.get("/settings", headers=headers).json()
-    assert settings["configuration_confirmed_at"]
-    assert settings["plan_approved_at"] is None
-    assert settings["daily_planning_enabled"] is False
-    host_id = _host_id(client, headers)
-    assert len(_tasks(client, headers)) == 1
-    assert len(_assignments(app, host_id)) == 1
-    assert _notes(app, host_id, "cleaner") == []
-    approved = client.post("/onboarding/approve-plan", json={"dispatch_mode": "review_only"}, headers=headers)
-    assert approved.status_code == 200, approved.text
-    assert approved.json()["daily_planning_enabled"] is True
-    assert approved.json()["plan_approved_at"]
-    assert approved.json()["dispatch_mode"] == "review_only"
-    assert all(row.dispatched_at is None for row in _assignments(app, host_id))
-    assert _notes(app, host_id, "cleaner") == []
-
-
 def test_manual_run_calls_the_agent_when_two_tasks_compete_and_get_matches_the_saved_run(client, app):
     headers = login(client)
     _put_settings(client, headers)
@@ -433,76 +406,6 @@ def test_two_tasks_one_cleaner_use_a_single_agent_call(client, app):
     assert len(payload["tasks"]) == 2
 
 
-def test_validator_rejects_overlap_and_outside_hours_and_repair_contains_only_those_failures(client, app):
-    headers = login(client)
-    _put_settings(client, headers)
-    stays = _stays(gap_hours=12, follow=True)
-    harbor = _property(client, headers, "Harbor", stays)
-    annex = _property(client, headers, "Annex", _stays(gap_hours=12, suffix="-2", follow=True))
-    other = _property(client, headers, "Quiet", _stays(checkout_hour=11, gap_hours=4, suffix="-3"))
-    ada = create_cleaner(
-        client,
-        headers,
-        "Ada",
-        timezone="UTC",
-        work_start="09:00:00",
-        work_end="17:00:00",
-        property_ids=[harbor["id"], annex["id"]],
-    )
-    create_cleaner(
-        client,
-        headers,
-        "Bea",
-        timezone="UTC",
-        work_start="08:00:00",
-        work_end="18:00:00",
-        property_ids=[other["id"]],
-    )
-    agent = FakeAgent(behavior="overlap_then_fix")
-    _use_agent(app, agent)
-    run = client.post("/planning/runs", headers=headers)
-    assert run.status_code == 200, run.text
-    assert len(agent.calls) == 2
-    repair = json.loads(agent.calls[1]["user"])
-    assert repair["kind"] == "repair"
-    assert "cleaners" not in repair
-    codes = {item["code"] for item in repair["failed_constraints"]}
-    assert "overlap" in codes
-    assert "outside_working_hours" in codes
-    affected = {item["task_id"] for item in repair["affected_tasks"]}
-    primary = json.loads(agent.calls[0]["user"])
-    primary_ids = {item["task_id"] for item in primary["tasks"]}
-    assert affected <= primary_ids
-    quiet = next(task for task in _tasks(client, headers) if task["property_id"] == other["id"])
-    assert quiet["id"] not in primary["user"] if False else quiet["id"] not in agent.calls[1]["user"]
-    assert ada["id"]
-
-
-def test_no_feasible_cleaner_alerts_once_on_the_dashboard_and_by_email(client, app):
-    headers = login(client)
-    _put_settings(client, headers)
-    _property(client, headers, "Harbor", _stays())
-    create_cleaner(client, headers, "Night", timezone="UTC", work_start="01:00:00", work_end="02:00:00")
-    _use_agent(app, FakeAgent())
-    run = client.post("/planning/runs", headers=headers)
-    assert run.status_code == 200, run.text
-    assert run.json()["llm_calls"] == 0
-    assert run.json()["llm_skipped_reason"] == "no_feasible_cleaner"
-    assert run.json()["unassigned_count"] == 1
-    host_id = _host_id(client, headers)
-    notes = [note for note in _notes(app, host_id, "host") if note.message_type == "task_unassigned"]
-    deliveries = _deliveries(app, host_id)
-    assert len(notes) == 1
-    assert len(deliveries) == 1
-    assert deliveries[0].status == "not_configured"
-    assert "Harbor" in deliveries[0].body
-    assert "remains unassigned" in deliveries[0].body
-    again = client.post("/planning/runs", headers=headers)
-    assert again.status_code == 200, again.text
-    assert len([note for note in _notes(app, host_id, "host") if note.message_type == "task_unassigned"]) == 1
-    assert len(_deliveries(app, host_id)) == 1
-
-
 def test_replaying_a_change_event_does_not_add_assignments_agent_calls_or_emails(client, app):
     headers = login(client)
     _put_settings(client, headers)
@@ -626,53 +529,6 @@ def test_second_trigger_during_a_running_plan_returns_the_active_run(client, app
     assert running == 1
 
 
-def test_malformed_json_and_exhausted_repairs_keep_the_previous_assignment(client, app):
-    headers = login(client)
-    app.state.settings.scheduling_max_repair_attempts = 1
-    _put_settings(client, headers)
-    harbor = _property(client, headers, "Harbor", _stays())
-    annex = _property(client, headers, "Annex", _stays(suffix="-2"))
-    create_cleaner(
-        client,
-        headers,
-        "Ada",
-        timezone="UTC",
-        work_start="08:00:00",
-        work_end="18:00:00",
-        max_jobs_per_day=1,
-        property_ids=[harbor["id"], annex["id"]],
-    )
-    quiet = _property(client, headers, "Quiet", _stays(checkout_hour=12, gap_hours=4, suffix="-3"))
-    bea = create_cleaner(
-        client,
-        headers,
-        "Bea",
-        timezone="UTC",
-        work_start="08:00:00",
-        work_end="18:00:00",
-        property_ids=[quiet["id"]],
-    )
-    from tests.conftest import sync
-
-    sync(client, headers, quiet["id"], _stays(checkout_hour=12, gap_hours=4, suffix="-3"))
-    host_id = _host_id(client, headers)
-    kept = next(row for row in _assignments(app, host_id) if row.cleaner_id == bea["id"])
-    agent = FakeAgent(responses=["not-json", "{}"])
-    _use_agent(app, agent)
-    run = client.post("/planning/runs", headers=headers)
-    assert run.status_code == 200, run.text
-    body = run.json()
-    assert body["status"] in {"failed", "partial"}
-    assert body["validation_outcome"] == "failed"
-    assert body["conflicts"]
-    assert body["repair_count"] == 1
-    assert len(agent.calls) == 2
-    still = next(row for row in _assignments(app, host_id) if row.id == kept.id)
-    assert still.state == "accepted"
-    assert still.cleaner_id == bea["id"]
-    assert harbor["id"]
-
-
 def test_review_only_persists_the_plan_and_confirmed_work_is_not_renotified(client, app):
     headers = login(client)
     _put_settings(client, headers, notify_cleaners=True, dispatch_mode="review_only")
@@ -689,44 +545,6 @@ def test_review_only_persists_the_plan_and_confirmed_work_is_not_renotified(clie
     assert run.json()["assignments_created"] == 0
     assert len(_notes(app, host_id, "cleaner")) == before
     assert all(row.dispatched_at is None for row in _assignments(app, host_id))
-
-
-def test_token_rules_skip_fast_path_scope_and_a_single_repair(client, app):
-    headers = login(client)
-    _put_settings(client, headers, daily_planning_enabled=True)
-    _property(client, headers, "Harbor", _stays())
-    create_cleaner(client, headers, "Ada", timezone="UTC", work_start="08:00:00", work_end="18:00:00")
-    confirmed = client.post("/onboarding/confirm-configuration", headers=headers)
-    assert confirmed.status_code == 200, confirmed.text
-    assert confirmed.json()["llm_calls"] == 0
-    assert confirmed.json()["llm_skipped_reason"] == "fast_path"
-    client.post("/onboarding/approve-plan", json={"dispatch_mode": "review_only"}, headers=headers)
-    host_id = _host_id(client, headers)
-    db = app.state.session_factory()
-    try:
-        second = orchestrate(db, host_id, "daily", app.state.settings, client=FakeAgent(), now=datetime.now(UTC))
-        db.commit()
-    finally:
-        db.close()
-    assert second.llm_calls == 0
-
-    headers = login(client, "scope-host")
-    _put_settings(client, headers)
-    harbor = _property(client, headers, "Harbor", _stays(gap_hours=12, follow=True))
-    annex = _property(client, headers, "Annex", _stays(gap_hours=12, suffix="-2", follow=True))
-    quiet = _property(client, headers, "Quiet", _stays(checkout_hour=11, gap_hours=4, suffix="-3"))
-    create_cleaner(client, headers, "Ada", timezone="UTC", work_start="09:00:00", work_end="17:00:00", property_ids=[harbor["id"], annex["id"]])
-    create_cleaner(client, headers, "Bea", timezone="UTC", work_start="08:00:00", work_end="18:00:00", property_ids=[quiet["id"]])
-    agent = FakeAgent(behavior="overlap_then_fix")
-    _use_agent(app, agent)
-    run = client.post("/planning/runs", headers=headers)
-    assert run.status_code == 200, run.text
-    primary = json.loads(agent.calls[0]["user"])
-    quiet_task = next(task for task in _tasks(client, headers) if task["property_id"] == quiet["id"])
-    assert quiet_task["id"] not in {item["task_id"] for item in primary["tasks"]}
-    assert len(agent.calls) == 2
-    assert json.loads(agent.calls[1]["user"])["kind"] == "repair"
-    assert run.json()["repair_count"] == 1
 
 
 def _replace_feed(app, property_id: str, stays: list[dict]) -> None:

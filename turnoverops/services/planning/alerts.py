@@ -82,11 +82,18 @@ def alert_unassigned_batch(db, host, items, settings, *, email_client=None) -> N
         links.append((prop.name, deadline, url, reason))
     lines.append("Open a cleaning link to adjust the schedule or arrange alternative coverage.")
     body = "\n".join(lines)
-    note = notify_host(db, host.id, "task_unassigned_batch", body, dedupe_key=key)
+    note = notify_host(
+        db,
+        host.id,
+        "task_unassigned",
+        body,
+        task_id=items[0][0].id if len(items) == 1 else None,
+        dedupe_key=key,
+    )
     delivery = NotificationDelivery(
         host_id=host.id,
         notification_id=note.id,
-        task_id=None,
+        task_id=items[0][0].id if len(items) == 1 else None,
         channel="email",
         status="pending",
         dedupe_key=key,
